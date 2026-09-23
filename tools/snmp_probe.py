@@ -71,9 +71,10 @@ _stub("homeassistant.components.binary_sensor", {
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components"))
 
-# Enable debug logging to surface per-iteration walk diagnostics
+# Logging level — INFO by default; DEBUG when --debug flag is passed
+log_level = logging.DEBUG if "--debug" in sys.argv else logging.INFO
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=log_level,
     format="[%(name)s %(levelname)s] %(message)s",
 )
 
