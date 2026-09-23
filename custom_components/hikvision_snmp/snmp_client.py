@@ -198,9 +198,14 @@ class HikvisionSnmpClient:
                 break
             var_bind = var_binds[0]
             if len(var_bind) < 2:
+                _LOGGER.debug("_walk_next iter=%d short var_bind: %r", iteration, var_bind)
                 break
             oid_str = str(var_bind[0])
             value = decode_value(var_bind[1])
+            _LOGGER.debug(
+                "_walk_next iter=%d returned oid=%r value=%r root=%r starts_with=%s",
+                iteration, oid_str, value, oid_root, oid_str.startswith(oid_root),
+            )
             if not oid_str.startswith(oid_root):
                 break
             results.append((oid_str, value))
