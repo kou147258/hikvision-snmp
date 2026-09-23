@@ -70,22 +70,21 @@ Settings → Devices & Services → Hikvision SNMP → ⋯ → **Configure**:
 - Home Assistant 2025.4+
 - Python 3.11+
 
-## Known Limitations (v0.1.0)
+## Known Limitations (v0.1.1)
 
-### Hikvision V5.x PTZ firmware quirks
+### Hikvision V5.x firmware quirks
 
-Some Hikvision V5.x PTZ / standalone-IPC firmwares (verified on
-`DS-2DF8C832MX-ZDK` V5.10.0 build 260519) have three behaviours the SNMP client
-must work around:
+Verified across two V5.x devices in the same network (`DS-2DF8C832MX-ZDK` PTZ
+on V5.10.0, `DS-2DE3A20IW-D/GLT/XM` IPC on V5.7.30):
 
 1. **GETBULK times out** — bulkCmd packets get no response from the device.
    The integration detects this once per host and silently switches to
    GETNEXT for the remainder of the session.
 2. **GETNEXT walk truncates mid-subtree** — the device starts dropping
-   GETNEXT responses around leaf .11. The integration compensates by
-   issuing single-GET fallbacks for every leaf index listed in
-   `SYSTEM_OIDS` that the walk missed. Result: ~21/23 system scalars are
-   reliably populated.
+   GETNEXT responses around leaf .11 under load. v0.1.1 compensates by
+   issuing single-GET fallbacks (with retry + 500ms backoff) for every
+   leaf index listed in `SYSTEM_OIDS` that the walk missed. Result:
+   ~21/23 system scalars are reliably populated.
 3. **Three INTEGER leaves consistently timeout even on single GET**
    (`.12.0` / `.24.0` / `.25.0`). These are exposed as `uptime_seconds`,
    `online`, and `recording`. The integration handles the gap gracefully:
@@ -93,13 +92,30 @@ must work around:
    - `online` (binary_sensor) falls back to `coordinator.last_update_success`.
    - `recording` (binary_sensor) returns `unknown` for IPCs without a
      channel table.
+5. **Busy-device behaviour on V5.7.30 IPCs under load** — when the IPC is
+   actively streaming video / recording, its SNMP daemon is starved by the
+   video pipeline and many requests timeout. v0.1.1 mitigates this with:
+   - 200ms inter-request delay in `walk_next` to give the daemon breathing
+     room.
+   - GETNEXT and single-GET retry on `RequestTimedOut` (500ms backoff).
+   - 1s per-request timeout (down from 2s) so failures surface quickly.
+   - For **initial sync** on a busy device, reboot the IPC and add it to
+     Home Assistant while the device is idle — the daemon responds fully
+     during the boot window. Subsequent updates may be partial; this is a
+     firmware-level limitation.
 
-These quirks are firmware bugs in V5.x PTZ firmware; they do not affect
-NVRs or older-firmware IPCs that should work with native GETBULK walks.
+### pysnmp + Windows quirk (affects the probe tool only)
+
+The standalone probe (`tools/snmp_probe.py`) runs on Windows and may not
+be able to complete a walk against a busy V5.7.30 IPC even with retries —
+pysnmp's UDP transport on Windows drops packets that Linux net-snmp
+successfully receives. This is a platform / library issue, not an
+integration bug. Home Assistant itself runs on Linux in the vast
+majority of installs; the integration behaves correctly there.
 
 ### Not supported (deferred to v0.2)
 
-- ISAPI / HTTP fallback
+- ISAPI / HTTP fallback (when SNMP daemon is fully starved)
 - Switch / control entities (reboot, channel on/off)
 - PTZ control
 - HACS default repository submission
