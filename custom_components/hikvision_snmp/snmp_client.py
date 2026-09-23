@@ -125,15 +125,19 @@ class HikvisionSnmpClient:
         """GETBULK walk. Returns ``[(oid_str, value), ...]`` for OIDs under oid_root."""
         results: list[tuple[str, Any]] = []
         current = ObjectIdentity(oid_root)
-        ctx = ContextData()
         while True:
             var_binds = await self._do_bulk(current, max_repetitions)
             if not var_binds:
                 break
             stop = True
             for var_bind in var_binds:
+                # pysnmp returns VarBind namedtuples of (name, value). Some
+                # edge cases (end-of-mib marker, malformed response) yield a
+                # 1-tuple or empty tuple; skip those defensively.
+                if len(var_bind) < 2:
+                    continue
                 oid_str = str(var_bind[0])
-                value = _decode_value(var_bind[1])
+                value = decode_value(var_bind[1])
                 if not oid_str.startswith(oid_root):
                     return results
                 results.append((oid_str, value))
