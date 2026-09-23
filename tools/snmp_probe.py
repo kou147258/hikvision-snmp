@@ -148,20 +148,38 @@ async def main() -> int:
         sys_descr = hik_val
         if not sys_descr:
             print()
-            print("[probe] === DIAGNOSTICS ===")
-            print("[probe] Hikvision private MIB did not return a sysDescr string.")
-            print("[probe] If the raw value type above says NoSuchInstance /")
-            print("[probe] NoSuchObject, the device responds to SNMP but either:")
-            print("[probe]   1. community / v3 credentials are wrong (Hikvision returns")
-            print("[probe]      NoSuchInstance for auth-failed GETs to mask the failure)")
-            print("[probe]   2. the device is not Hikvision")
-            print("[probe]   3. private MIB subtree is empty (very old firmware)")
-            print()
-            print("[probe] Try one of:")
-            print(f"[probe]   python tools/snmp_probe.py --host {args.host} --community private")
-            print(f"[probe]   Test-NetConnection {args.host} -Port 161  # TCP only, but rules out route")
-            print("[probe] If RFC1213 also returned NoSuchInstance, the device responds to")
-            print("[probe] UDP/161 but rejects your community — re-check device web UI.")
+            print("[probe] === DIAGNOSTICS — discovering actual OID tree ===")
+            # Walk the whole Hikvision enterprise OID to find what's really exposed.
+            try:
+                print("[probe] walking .1.3.6.1.4.1.39165 (Hikvision enterprise root)...")
+                hik_walk = await client.walk("1.3.6.1.4.1.39165", max_repetitions=10)
+                if hik_walk:
+                    print(f"[probe]   found {len(hik_walk)} entries:")
+                    for oid_str, val in hik_walk[:80]:
+                        print(f"     {oid_str} = {val!r}")
+                    if len(hik_walk) > 80:
+                        print(f"     ... ({len(hik_walk) - 80} more)")
+                else:
+                    print("[probe]   no entries under .1.3.6.1.4.1.39165 — Hikvision MIB subtree is empty.")
+                    print("[probe]   Trying broader enterprise root .1.3.6.1.4.1 ...")
+                    ent_walk = await client.walk("1.3.6.1.4.1", max_repetitions=20)
+                    if ent_walk:
+                        print(f"[probe]   found {len(ent_walk)} enterprise OIDs (truncated):")
+                        # Group by first OID component after .1.3.6.1.4.1 to find enterprise IDs
+                        seen: set[str] = set()
+                        for oid_str, _ in ent_walk[:120]:
+                            parts = oid_str.split(".")
+                            if len(parts) > 6:
+                                seen.add(parts[6])  # enterprise ID
+                        print(f"[+]   enterprise IDs visible: {sorted(seen)}")
+                        # Print first 30 to show what's there
+                        for oid_str, val in ent_walk[:30]:
+                            print(f"     {oid_str} = {val!r}")
+                    else:
+                        print("[probe]   no entries under .1.3.6.1.4.1 either — SNMP may be")
+                        print("[probe]   enabled in web UI but the daemon isn't actually serving data.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[probe] walk failed: {exc}")
             return 1
 
         # 2) System subtree walk
