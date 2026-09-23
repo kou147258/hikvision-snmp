@@ -180,6 +180,7 @@ async def main() -> int:
             return 1
 
         # 2) System subtree walk (.1.3.6.1.4.1.39165.1)
+        print("[probe] walking .39165.1 (system scalars)...")
         sys_raw = await client.walk(
             f"{HIKVISION_PRIVATE_MIB_ROOT}.1",
             known_leaves=list(SYSTEM_OIDS.values()),
@@ -205,6 +206,7 @@ async def main() -> int:
                 print(f"  {key:20s}: {raw!r}")
 
         # 3) Channel subtree walk (NVR only — IPCs don't expose this)
+        print("[probe] walking .39165.2 (channels)...")
         try:
             ch_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.2")
             ch_dec = decode_walk_results(ch_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.2", CHANNEL_OIDS)
@@ -221,6 +223,7 @@ async def main() -> int:
             print(f"[probe] channels: skipped ({exc})")
 
         # 4) Disk subtree walk (NVR only — IPCs don't expose this)
+        print("[probe] walking .39165.3 (disks)...")
         try:
             disk_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.3")
             disk_dec = decode_walk_results(disk_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.3", DISK_OIDS)

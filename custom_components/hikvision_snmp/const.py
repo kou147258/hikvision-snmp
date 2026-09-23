@@ -11,8 +11,8 @@ DEFAULT_PORT = 161
 DEFAULT_SCAN_INTERVAL = 10  # seconds
 MIN_SCAN_INTERVAL = 5
 MAX_SCAN_INTERVAL = 300
-DEFAULT_REQUEST_TIMEOUT = 2  # seconds per request
-DEFAULT_RETRIES = 2
+DEFAULT_REQUEST_TIMEOUT = 1  # seconds per request (reduced for fast probe failure)
+DEFAULT_RETRIES = 1
 BULK_MAX_REPETITIONS = 25
 
 # ---- Device-type enum (ConfigFlow choices) ----
