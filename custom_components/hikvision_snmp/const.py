@@ -27,42 +27,73 @@ DEVICE_TYPES = [DEVICE_TYPE_AUTO, DEVICE_TYPE_NVR, DEVICE_TYPE_IPC, DEVICE_TYPE_
 
 HIKVISION_PRIVATE_MIB_ROOT = "1.3.6.1.4.1.39165"
 
-# Subtrees walked each poll
-OID_SYSTEM = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1"   # system info (name/model/firmware/uptime/cpu/mem/temp)
-OID_CHANNEL = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.2.1"  # per-channel table
-OID_DISK = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.3.1"     # disk / SD-card table
-OID_ALARM = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.5.1"    # alarm input subtree (reserved for v2)
+# Subtree root that holds device scalars on DS-2DF8 series V5.x firmware.
+# Verified against DS-2DF8C832MX-ZDK firmware V5.10.0 build 260519
+# via `snmpwalk -v2c -c public .1.3.6.1.4.1.39165.1` (returns 34 leaves
+# numbered .1.0 through .34.0). Other firmware variants may differ.
+OID_SYSTEM = f"{HIKVISION_PRIVATE_MIB_ROOT}.1"
 
-# ---- OID table: which leaf suffixes under each subtree hold which metric ----
-# Each value is a single-component leaf identifier (column index within the
-# subtree). For the system subtree, the trailing instance is `.0` (scalar);
-# for channel and disk tables, the trailing instance is the row index.
+# Per-subtree OID definitions are kept as dicts keyed by metric name, with
+# values being the LEAF index under the subtree root. The full OID is
+# reconstructed as ``f"{subtree_root}.{leaf}.0"`` for scalar leaves.
+#
+# Values returned by the device on V5.x IPC firmware are mostly STRING with
+# embedded units (e.g. ``"27 PERCENT"``, ``"116.5 GB"``). Integer / IpAddress
+# leaves are decoded as-is. Helpers in helpers.py strip units from the
+# string-form values.
+#
+# NOTE: NVR firmware likely exposes additional sub-trees for per-channel
+# status and per-disk metrics. v1 only ships the system subtree map below;
+# per-channel / per-disk entities are wired but will simply be empty for
+# devices that don't expose those sub-trees.
 
 SYSTEM_OIDS: dict[str, str] = {
-    "model": "1",              # .1.3.6.1.4.1.39165.1.1.1.1.0  (scalar)
-    "device_name": "2",         # .1.3.6.1.4.1.39165.1.1.1.2.0
-    "firmware": "3",           # .1.3.6.1.4.1.39165.1.1.1.3.0
-    "device_type_code": "4",   # .1.3.6.1.4.1.39165.1.1.1.4.0  (enum int: 1=NVR, 2=DVR, 3=IPC)
-    "uptime": "5",             # .1.3.6.1.4.1.39165.1.1.1.5.0  (TimeTicks, 1/100 s)
-    "cpu": "6",                # .1.3.6.1.4.1.39165.1.1.1.6.0  (percent)
-    "memory": "7",             # .1.3.6.1.4.1.39165.1.1.1.7.0  (percent)
-    "temperature": "8",        # .1.3.6.1.4.1.39165.1.1.1.8.0  (celsius)
+    "model": "1",                     # STRING "DS-2DF8C832MX-ZDK"
+    "device_name": "2",               # STRING "0"  (some firmwares put device name here)
+    "firmware": "3",                  # STRING "V5.10.0 build 260519"
+    "mac": "4",                       # STRING "08-cc-81-fe-f7-d8"
+    "device_count": "5",              # STRING "88"
+    "manufacturer": "6",              # STRING "Hikvision"
+    "cpu": "7",                       # STRING "27 PERCENT"  -> 27
+    "storage_total": "8",             # STRING "116.5 GB"    -> 116.5
+    "memory_used_pct": "9",           # STRING "0 PERCENT"   -> 0
+    "memory_total": "10",             # STRING "0 MB"        -> 0
+    "storage_used_pct": "11",         # STRING "97 PERCENT"  -> 97
+    "uptime_seconds": "12",           # INTEGER
+    "ip_addr_alt1": "13",             # IpAddress
+    "ip_addr_alt2": "14",             # IpAddress
+    "ip_addr_alt3": "15",             # IpAddress
+    "ip_addr": "16",                  # IpAddress 10.18.176.10
+    "subnet_mask": "17",              # IpAddress 255.255.255.0
+    "gateway": "18",                  # IpAddress
+    "device_time": "19",              # STRING "2026-09-23 14:58:17"
+    "video_codec_primary": "21",      # STRING "H.264"
+    "video_codec_secondary": "22",    # STRING "H.264"
+    "online": "24",                   # INTEGER 1 = online, 0 = offline
+    "recording": "25",                # INTEGER 1 = recording, 0 = not
+    "network_type": "29",             # STRING "ETHERNET"
 }
 
+# Channel subtree — placeholders for NVRs. IPCs do not expose these.
+OID_CHANNEL = f"{HIKVISION_PRIVATE_MIB_ROOT}.2"
+
 CHANNEL_OIDS: dict[str, str] = {
-    "name": "1",               # .1.3.6.1.4.1.39165.1.2.1.1.X  (X = channel index)
-    "online": "2",             # 1=online, 0=offline
-    "recording": "3",          # 1=recording, 0=not
-    "bitrate": "4",            # kbps
+    "name": "1",
+    "online": "2",
+    "recording": "3",
+    "bitrate": "4",
     "resolution": "5",
 }
 
+# Disk subtree — placeholders for NVRs. IPCs do not expose these.
+OID_DISK = f"{HIKVISION_PRIVATE_MIB_ROOT}.3"
+
 DISK_OIDS: dict[str, str] = {
-    "name": "1",               # .1.3.6.1.4.1.39165.1.3.1.1.X  (X = disk index)
-    "status": "2",             # enum int (1=normal, 2=idle, etc.)
-    "capacity": "3",           # MB
-    "free": "4",               # MB
-    "temperature": "5",        # celsius
+    "name": "1",
+    "status": "2",
+    "capacity": "3",
+    "free": "4",
+    "temperature": "5",
 }
 
 # ---- Config-flow field names ----
@@ -71,9 +102,9 @@ CONF_NAME = "name"
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_DEVICE_TYPE = "device_type"
-CONF_VERSION = "version"          # "v2c" or "v3"
-CONF_COMMUNITY = "community"      # v2c only
-CONF_USERNAME = "username"        # v3 only
+CONF_VERSION = "version"
+CONF_COMMUNITY = "community"
+CONF_USERNAME = "username"
 CONF_AUTH_PROTOCOL = "auth_protocol"
 CONF_AUTH_KEY = "auth_key"
 CONF_PRIVACY_PROTOCOL = "privacy_protocol"
@@ -85,7 +116,7 @@ SNMP_VERSIONS = ["v2c", "v3"]
 V3_AUTH_PROTOCOLS = ["MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512"]
 V3_PRIVACY_PROTOCOLS = ["DES", "3DES", "AES128", "AES192", "AES256"]
 
-# ---- Hikvision device-type code → string mapping (read from .1.1.1.4) ----
+# ---- Hikvision device-type code → string mapping (legacy MIB; not used on V5.x) ----
 
 DEVICE_TYPE_CODE_MAP: dict[int, str] = {
     1: DEVICE_TYPE_NVR,

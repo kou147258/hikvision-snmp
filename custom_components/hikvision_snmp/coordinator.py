@@ -52,30 +52,33 @@ class HikvisionDataUpdateCoordinator(DataUpdateCoordinator):
         return self._identification
 
     async def _async_update_data(self) -> dict[str, Any]:
+        # On V5.x firmware we walk the system subtree which lives at
+        # ``.1.3.6.1.4.1.39165.1``. NVRs additionally publish channel /
+        # disk subtrees at ``.2`` / ``.3``; we walk those too and let
+        # the per-channel / per-disk entity code path decide what to do.
+        sys_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.1"
+        ch_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.2"
+        disk_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.3"
+
+        sys_raw = await self._client.walk(sys_root, max_repetitions=BULK_MAX_REPETITIONS)
+
+        # Channel / disk walks are best-effort — many devices (notably
+        # standalone IPCs) don't expose those subtrees. Failures are
+        # silently ignored; the per-disk / per-channel sensor code paths
+        # simply see empty dicts.
+        ch_raw: list[tuple[str, Any]] = []
+        disk_raw: list[tuple[str, Any]] = []
         try:
-            sys_raw = await self._client.walk(
-                f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1",
-                max_repetitions=BULK_MAX_REPETITIONS,
-            )
-            ch_raw = await self._client.walk(
-                f"{HIKVISION_PRIVATE_MIB_ROOT}.1.2.1",
-                max_repetitions=BULK_MAX_REPETITIONS,
-            )
-            disk_raw = await self._client.walk(
-                f"{HIKVISION_PRIVATE_MIB_ROOT}.1.3.1",
-                max_repetitions=BULK_MAX_REPETITIONS,
-            )
+            ch_raw = await self._client.walk(ch_root, max_repetitions=BULK_MAX_REPETITIONS)
         except HikvisionSnmpError as exc:
-            raise UpdateFailed(f"SNMP walk failed: {exc}") from exc
-
-        sys_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1"
-        ch_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.2.1"
-        disk_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.3.1"
-
-        sys_decoded = decode_walk_results(sys_raw, sys_root, SYSTEM_OIDS)
+            _LOGGER.debug("channel walk failed (likely no NVR channels): %s", exc)
+        try:
+            disk_raw = await self._client.walk(disk_root, max_repetitions=BULK_MAX_REPETITIONS)
+        except HikvisionSnmpError as exc:
+            _LOGGER.debug("disk walk failed (likely no NVR disks): %s", exc)
 
         return {
-            "identification": sys_decoded,
+            "identification": decode_walk_results(sys_raw, sys_root, SYSTEM_OIDS),
             "channels": decode_walk_results(ch_raw, ch_root, CHANNEL_OIDS),
             "disks": decode_walk_results(disk_raw, disk_root, DISK_OIDS),
         }

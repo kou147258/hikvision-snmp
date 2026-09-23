@@ -6,6 +6,7 @@ from custom_components.hikvision_snmp.helpers import (
     parse_bool,
     parse_int,
     parse_uptime,
+    parse_value_with_unit,
 )
 
 
@@ -119,3 +120,51 @@ def test_decode_walk_results_skips_unknown_leaf_prefix():
     ]
     out = decode_walk_results(raw, "1.3.6.1.4.1.39165.1.1.1", {"firmware": "3"})
     assert out == {"firmware": {"0": "V1"}}
+
+
+# ---- parse_value_with_unit ----
+
+
+def test_parse_value_with_unit_percent():
+    assert parse_value_with_unit("27 PERCENT") == (27.0, "PERCENT")
+
+
+def test_parse_value_with_unit_gb():
+    assert parse_value_with_unit("116.5 GB") == (116.5, "GB")
+
+
+def test_parse_value_with_unit_mb():
+    assert parse_value_with_unit("256 MB") == (256.0, "MB")
+
+
+def test_parse_value_with_unit_pure_numeric_string():
+    assert parse_value_with_unit("88") == (88.0, None)
+
+
+def test_parse_value_with_unit_no_numeric():
+    assert parse_value_with_unit("H.264") == (None, "H.264")
+
+
+def test_parse_value_with_unit_int_input():
+    assert parse_value_with_unit(27) == (27.0, None)
+
+
+def test_parse_value_with_unit_float_input():
+    assert parse_value_with_unit(116.5) == (116.5, None)
+
+
+def test_parse_value_with_unit_bytes_input():
+    assert parse_value_with_unit(b"27 PERCENT") == (27.0, "PERCENT")
+
+
+def test_parse_value_with_unit_none():
+    assert parse_value_with_unit(None) == (None, None)
+
+
+def test_parse_value_with_unit_empty_string():
+    assert parse_value_with_unit("") == (None, None)
+
+
+def test_parse_value_with_unit_bool():
+    # Booleans are numeric; True → 1.0
+    assert parse_value_with_unit(True) == (1.0, None)

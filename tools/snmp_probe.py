@@ -70,7 +70,12 @@ _stub("homeassistant.components.binary_sensor", {
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components"))
 
-from hikvision_snmp.helpers import decode_octet_string, decode_walk_results, parse_int  # noqa: E402
+from hikvision_snmp.helpers import (  # noqa: E402
+    decode_octet_string,
+    decode_walk_results,
+    parse_int,
+    parse_value_with_unit,
+)
 from hikvision_snmp.const import (  # noqa: E402
     CHANNEL_OIDS,
     DISK_OIDS,
@@ -126,9 +131,9 @@ async def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[probe] RFC1213 get failed: {exc}")
 
-        # 1) Hikvision private MIB sysDescr (raw)
+        # 1) Hikvision private MIB sysDescr (raw) — V5.x flat structure at .1.1.0
         try:
-            err_ind, err_stat, hik_vbs = await client.get_raw(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1.1.0")
+            err_ind, err_stat, hik_vbs = await client.get_raw(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.0")
             if err_ind:
                 print(f"[probe] Hikvision error_indication: {err_ind}")
                 print(f"[probe]   (this is what pysnmp saw from the network. If it says")
@@ -149,42 +154,24 @@ async def main() -> int:
         if not sys_descr:
             print()
             print("[probe] === DIAGNOSTICS — discovering actual OID tree ===")
-            # Walk the whole Hikvision enterprise OID to find what's really exposed.
             try:
-                print("[probe] walking .1.3.6.1.4.1.39165 (Hikvision enterprise root)...")
-                hik_walk = await client.walk("1.3.6.1.4.1.39165", max_repetitions=10)
+                print("[probe] walking .1.3.6.1.4.1.39165.1 (Hikvision system subtree)...")
+                hik_walk = await client.walk("1.3.6.1.4.1.39165.1", max_repetitions=20)
                 if hik_walk:
                     print(f"[probe]   found {len(hik_walk)} entries:")
-                    for oid_str, val in hik_walk[:80]:
-                        print(f"     {oid_str} = {val!r}")
-                    if len(hik_walk) > 80:
-                        print(f"     ... ({len(hik_walk) - 80} more)")
+                    for oid_str, val in hik_walk[:60]:
+                        print(f"     {oid_str:60s} = {val!r}")
+                    if len(hik_walk) > 60:
+                        print(f"     ... ({len(hik_walk) - 60} more)")
                 else:
-                    print("[probe]   no entries under .1.3.6.1.4.1.39165 — Hikvision MIB subtree is empty.")
-                    print("[probe]   Trying broader enterprise root .1.3.6.1.4.1 ...")
-                    ent_walk = await client.walk("1.3.6.1.4.1", max_repetitions=20)
-                    if ent_walk:
-                        print(f"[probe]   found {len(ent_walk)} enterprise OIDs (truncated):")
-                        # Group by first OID component after .1.3.6.1.4.1 to find enterprise IDs
-                        seen: set[str] = set()
-                        for oid_str, _ in ent_walk[:120]:
-                            parts = oid_str.split(".")
-                            if len(parts) > 6:
-                                seen.add(parts[6])  # enterprise ID
-                        print(f"[+]   enterprise IDs visible: {sorted(seen)}")
-                        # Print first 30 to show what's there
-                        for oid_str, val in ent_walk[:30]:
-                            print(f"     {oid_str} = {val!r}")
-                    else:
-                        print("[probe]   no entries under .1.3.6.1.4.1 either — SNMP may be")
-                        print("[probe]   enabled in web UI but the daemon isn't actually serving data.")
+                    print("[probe]   no entries under .1.3.6.1.4.1.39165.1")
             except Exception as exc:  # noqa: BLE001
                 print(f"[probe] walk failed: {exc}")
             return 1
 
-        # 2) System subtree walk
-        sys_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1")
-        sys_dec = decode_walk_results(sys_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1", SYSTEM_OIDS)
+        # 2) System subtree walk (.1.3.6.1.4.1.39165.1)
+        sys_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.1")
+        sys_dec = decode_walk_results(sys_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.1", SYSTEM_OIDS)
         print("[probe] system subtree scalars:")
         for key in SYSTEM_OIDS:
             entry = sys_dec.get(key, {})
@@ -192,37 +179,50 @@ async def main() -> int:
                 print(f"  {key:20s}: (missing)")
                 continue
             raw = entry.get("0") or next(iter(entry.values()), None)
-            if key in ("model", "device_name", "firmware"):
+            # For STRING-with-unit metrics, show both raw and parsed
+            if key in ("cpu", "memory_used_pct", "storage_total", "storage_used_pct",
+                       "memory_total"):
+                num, unit = parse_value_with_unit(raw)
+                print(f"  {key:20s}: raw={decode_octet_string(raw)!r}  parsed={num} {unit}")
+            elif key in ("model", "device_name", "firmware", "manufacturer", "mac",
+                         "device_time", "video_codec_primary", "video_codec_secondary",
+                         "network_type"):
                 print(f"  {key:20s}: {decode_octet_string(raw)!r}")
             else:
-                print(f"  {key:20s}: {parse_int(raw)}")
+                print(f"  {key:20s}: {raw!r}")
 
-        # 3) Channel subtree walk
-        ch_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.2.1")
-        ch_dec = decode_walk_results(ch_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.1.2.1", CHANNEL_OIDS)
-        n_channels = len(ch_dec.get("name", {}))
-        n_online = sum(1 for v in ch_dec.get("online", {}).values() if parse_int(v) == 1)
-        n_recording = sum(1 for v in ch_dec.get("recording", {}).values() if parse_int(v) == 1)
-        print(f"[probe] channels: {n_channels} total, {n_online} online, {n_recording} recording")
-        for idx in sorted(ch_dec.get("name", {}).keys(), key=lambda x: int(x)):
-            print(f"  channel {idx}: name={decode_octet_string(ch_dec['name'].get(idx))!r} "
-                  f"online={parse_int(ch_dec.get('online', {}).get(idx))} "
-                  f"rec={parse_int(ch_dec.get('recording', {}).get(idx))} "
-                  f"bitrate={parse_int(ch_dec.get('bitrate', {}).get(idx))} kbps")
+        # 3) Channel subtree walk (NVR only — IPCs don't expose this)
+        try:
+            ch_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.2")
+            ch_dec = decode_walk_results(ch_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.2", CHANNEL_OIDS)
+            n_channels = len(ch_dec.get("name", {}))
+            n_online = sum(1 for v in ch_dec.get("online", {}).values() if parse_int(v) == 1)
+            n_recording = sum(1 for v in ch_dec.get("recording", {}).values() if parse_int(v) == 1)
+            print(f"[probe] channels: {n_channels} total, {n_online} online, {n_recording} recording")
+            for idx in sorted(ch_dec.get("name", {}).keys(), key=lambda x: int(x)):
+                print(f"  channel {idx}: name={decode_octet_string(ch_dec['name'].get(idx))!r} "
+                      f"online={parse_int(ch_dec.get('online', {}).get(idx))} "
+                      f"rec={parse_int(ch_dec.get('recording', {}).get(idx))} "
+                      f"bitrate={parse_int(ch_dec.get('bitrate', {}).get(idx))} kbps")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[probe] channels: skipped ({exc})")
 
-        # 4) Disk subtree walk
-        disk_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.3.1")
-        disk_dec = decode_walk_results(disk_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.1.3.1", DISK_OIDS)
-        n_disks = len(disk_dec.get("name", {}))
-        print(f"[probe] disks: {n_disks} total")
-        for idx in sorted(disk_dec.get("name", {}).keys(), key=lambda x: int(x)):
-            cap_mb = parse_int(disk_dec.get("capacity", {}).get(idx))
-            free_mb = parse_int(disk_dec.get("free", {}).get(idx))
-            cap_gb = round(cap_mb / 1024, 2) if cap_mb else None
-            free_gb = round(free_mb / 1024, 2) if free_mb else None
-            print(f"  disk {idx}: name={decode_octet_string(disk_dec['name'].get(idx))!r} "
-                  f"capacity={cap_gb} GB free={free_gb} GB "
-                  f"temp={parse_int(disk_dec.get('temperature', {}).get(idx))}°C")
+        # 4) Disk subtree walk (NVR only — IPCs don't expose this)
+        try:
+            disk_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.3")
+            disk_dec = decode_walk_results(disk_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.3", DISK_OIDS)
+            n_disks = len(disk_dec.get("name", {}))
+            print(f"[probe] disks: {n_disks} total")
+            for idx in sorted(disk_dec.get("name", {}).keys(), key=lambda x: int(x)):
+                cap_mb = parse_int(disk_dec.get("capacity", {}).get(idx))
+                free_mb = parse_int(disk_dec.get("free", {}).get(idx))
+                cap_gb = round(cap_mb / 1024, 2) if cap_mb else None
+                free_gb = round(free_mb / 1024, 2) if free_mb else None
+                print(f"  disk {idx}: name={decode_octet_string(disk_dec['name'].get(idx))!r} "
+                      f"capacity={cap_gb} GB free={free_gb} GB "
+                      f"temp={parse_int(disk_dec.get('temperature', {}).get(idx))}°C")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[probe] disks: skipped ({exc})")
 
         print("[probe] OK — integration should work against this device.")
         return 0

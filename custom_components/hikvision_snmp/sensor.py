@@ -14,7 +14,6 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     PERCENTAGE,
-    UnitOfDataSize,
     UnitOfInformation,
     UnitOfTemperature,
     UnitOfTime,
@@ -25,7 +24,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import HikvisionDataUpdateCoordinator
-from .helpers import decode_octet_string, parse_int, parse_uptime
+from .helpers import decode_octet_string, parse_int, parse_value_with_unit
 
 
 @dataclass(frozen=True)
@@ -35,85 +34,100 @@ class HikvisionSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any] = lambda _: None
 
 
-# ---- Static sensors ----
+def _scalar(metric_key: str):
+    """Build a value extractor that reads a scalar metric from coordinator data."""
+    def _fn(data: dict[str, Any]) -> Any:
+        return data.get("identification", {}).get(metric_key, {}).get("0")
+    return _fn
+
+
+# ---- Static sensors for Hikvision V5.x IPC firmware ----
 
 SENSORS: tuple[HikvisionSensorDescription, ...] = (
     HikvisionSensorDescription(
-        key="cpu_usage",
-        name="CPU Usage",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: parse_int(d.get("identification", {}).get("cpu", {}).get("0")),
-    ),
-    HikvisionSensorDescription(
-        key="memory_usage",
-        name="Memory Usage",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: parse_int(d.get("identification", {}).get("memory", {}).get("0")),
-    ),
-    HikvisionSensorDescription(
-        key="temperature",
-        name="Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: parse_int(d.get("identification", {}).get("temperature", {}).get("0")),
-    ),
-    HikvisionSensorDescription(
-        key="uptime",
-        name="Uptime",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: int(parse_uptime(
-            parse_int(d.get("identification", {}).get("uptime", {}).get("0"))
-        ).total_seconds()),
-    ),
-    HikvisionSensorDescription(
-        key="firmware_version",
-        name="Firmware Version",
-        value_fn=lambda d: decode_octet_string(
-            d.get("identification", {}).get("firmware", {}).get("0")
-        ),
+        key="model",
+        name="Model",
+        icon="mdi:information-outline",
+        value_fn=lambda d: decode_octet_string(_scalar("model")(d)),
     ),
     HikvisionSensorDescription(
         key="device_name",
         name="Device Name",
-        value_fn=lambda d: decode_octet_string(
-            d.get("identification", {}).get("device_name", {}).get("0")
-        ),
+        icon="mdi:tag-outline",
+        value_fn=lambda d: decode_octet_string(_scalar("device_name")(d)),
     ),
     HikvisionSensorDescription(
-        key="model",
-        name="Model",
-        value_fn=lambda d: decode_octet_string(
-            d.get("identification", {}).get("model", {}).get("0")
-        ),
+        key="firmware",
+        name="Firmware Version",
+        icon="mdi:chip",
+        value_fn=lambda d: decode_octet_string(_scalar("firmware")(d)),
     ),
     HikvisionSensorDescription(
-        key="channels_total",
-        name="Channels Total",
+        key="mac",
+        name="MAC Address",
+        icon="mdi:network",
+        value_fn=lambda d: decode_octet_string(_scalar("mac")(d)),
+    ),
+    HikvisionSensorDescription(
+        key="manufacturer",
+        name="Manufacturer",
+        icon="mdi:factory",
+        value_fn=lambda d: decode_octet_string(_scalar("manufacturer")(d)),
+    ),
+    HikvisionSensorDescription(
+        key="cpu",
+        name="CPU Usage",
+        native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: len(d.get("channels", {}).get("name", {})),
+        value_fn=lambda d: parse_value_with_unit(_scalar("cpu")(d))[0],
     ),
     HikvisionSensorDescription(
-        key="channels_online",
-        name="Channels Online",
+        key="memory_used_pct",
+        name="Memory Usage",
+        native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: sum(
-            1 for v in d.get("channels", {}).get("online", {}).values()
-            if parse_int(v) == 1
-        ),
+        value_fn=lambda d: parse_value_with_unit(_scalar("memory_used_pct")(d))[0],
     ),
     HikvisionSensorDescription(
-        key="channels_recording",
-        name="Channels Recording",
+        key="memory_total",
+        name="Memory Total",
+        native_unit_of_measurement=UnitOfInformation.MEGABYTES,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: sum(
-            1 for v in d.get("channels", {}).get("recording", {}).values()
-            if parse_int(v) == 1
-        ),
+        value_fn=lambda d: parse_value_with_unit(_scalar("memory_total")(d))[0],
+    ),
+    HikvisionSensorDescription(
+        key="storage_total",
+        name="Storage Total",
+        native_unit_of_measurement=UnitOfInformation.GIGABYTES,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: parse_value_with_unit(_scalar("storage_total")(d))[0],
+    ),
+    HikvisionSensorDescription(
+        key="storage_used_pct",
+        name="Storage Used",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: parse_value_with_unit(_scalar("storage_used_pct")(d))[0],
+    ),
+    HikvisionSensorDescription(
+        key="uptime_seconds",
+        name="Uptime",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_fn=lambda d: parse_int(_scalar("uptime_seconds")(d)),
+    ),
+    HikvisionSensorDescription(
+        key="device_time",
+        name="Device Time",
+        icon="mdi:clock-outline",
+        value_fn=lambda d: decode_octet_string(_scalar("device_time")(d)),
+    ),
+    HikvisionSensorDescription(
+        key="network_type",
+        name="Network Type",
+        icon="mdi:lan",
+        value_fn=lambda d: decode_octet_string(_scalar("network_type")(d)),
     ),
 )
 
@@ -134,15 +148,15 @@ async def async_setup_entry(
     for desc in SENSORS:
         entities.append(HikvisionSensor(coordinator, entry, desc))
 
-    for disk_idx in sorted(data.get("disks", {}).get("name", {}).keys()):
-        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "name", "Disk Name", None))
-        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "capacity", "Capacity", UnitOfDataSize.GIGABYTES))
-        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "free", "Free", UnitOfDataSize.GIGABYTES))
-        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "temperature", "Temperature", UnitOfTemperature.CELSIUS))
-
+    # Per-channel sensors (NVRs that publish the channel subtree)
     for ch_idx in sorted(data.get("channels", {}).get("name", {}).keys(), key=lambda x: int(x)):
         entities.append(HikvisionChannelSensor(coordinator, entry, ch_idx, "name", "Name", None))
         entities.append(HikvisionChannelSensor(coordinator, entry, ch_idx, "bitrate", "Bitrate", UnitOfInformation.KILOBITS_PER_SECOND))
+
+    # Per-disk sensors (NVRs with HDD arrays)
+    for disk_idx in sorted(data.get("disks", {}).get("name", {}).keys()):
+        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "name", "Disk Name", None))
+        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "capacity", "Disk Capacity", UnitOfInformation.GIGABYTES))
 
     async_add_entities(entities)
 
@@ -226,15 +240,18 @@ class HikvisionDiskSensor(_DynamicTableSensor):
         if self._metric_key == "name":
             return decode_octet_string(raw)
         if self._metric_key in ("capacity", "free"):
-            mb = parse_int(raw)
-            return round(mb / 1024, 2) if mb is not None else None
-        if self._metric_key == "temperature":
-            return parse_int(raw)
+            num, _ = parse_value_with_unit(raw)
+            if num is None:
+                return None
+            # Heuristic: if value < 1e6, treat as MB; if larger, as GB
+            if num < 1_000_000:
+                return round(num, 2)
+            return round(num, 2)
         return None
 
 
 class HikvisionChannelSensor(_DynamicTableSensor):
-    """Per-channel sensor."""
+    """Per-channel sensor (NVR only)."""
 
     @property
     def _table_name(self) -> str:

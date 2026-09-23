@@ -41,7 +41,11 @@ class _Base(
 
 
 class HikvisionOnlineBinarySensor(_Base):
-    """Device reachability derived from coordinator success."""
+    """Device online state (Hikvision OID .24.0: INTEGER 1=online, 0=offline).
+
+    Falls back to ``coordinator.last_update_success`` when the OID is absent
+    on firmware variants that don't expose it.
+    """
 
     _attr_name = "Online"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
@@ -54,11 +58,22 @@ class HikvisionOnlineBinarySensor(_Base):
 
     @property
     def is_on(self) -> bool | None:
+        # Prefer the device-reported OID if present
+        oid_val = parse_int(
+            self.coordinator.data.get("identification", {}).get("online", {}).get("0")
+        ) if self.coordinator.data else None
+        if oid_val is not None:
+            return oid_val == 1
+        # Fallback: coordinator last-update success
         return self.coordinator.last_update_success
 
 
 class HikvisionRecordingBinarySensor(_Base):
-    """True if any channel is currently recording."""
+    """Recording state for the device.
+
+    On standalone IPCs, derived from OID .25.0 (INTEGER). On NVRs, derived
+    from any channel in the channel table having recording=1.
+    """
 
     _attr_name = "Recording"
 
@@ -72,5 +87,14 @@ class HikvisionRecordingBinarySensor(_Base):
     def is_on(self) -> bool | None:
         if self.coordinator.data is None:
             return None
+        # NVR-style: any channel in channel table
         rec = self.coordinator.data.get("channels", {}).get("recording", {})
-        return any(parse_int(v) == 1 for v in rec.values())
+        if rec:
+            return any(parse_int(v) == 1 for v in rec.values())
+        # IPC-style: device-level recording OID
+        oid_val = parse_int(
+            self.coordinator.data.get("identification", {}).get("recording", {}).get("0")
+        )
+        if oid_val is not None:
+            return oid_val == 1
+        return None

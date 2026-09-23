@@ -50,6 +50,41 @@ def parse_bool(value: Any) -> bool | None:
     return None
 
 
+def parse_value_with_unit(value: Any) -> tuple[float | None, str | None]:
+    """Parse Hikvision V5.x STRING values like ``"27 PERCENT"`` / ``"116.5 GB"``.
+
+    Returns ``(numeric_value, unit)`` where ``unit`` is the trailing non-numeric
+    token (e.g. ``"PERCENT"``, ``"GB"``) or None for unitless numerics. Returns
+    ``(None, None)`` on missing / unparseable input.
+
+    Examples:
+        parse_value_with_unit("27 PERCENT")  -> (27.0, "PERCENT")
+        parse_value_with_unit("116.5 GB")    -> (116.5, "GB")
+        parse_value_with_unit("H.264")       -> (None, "H.264")
+        parse_value_with_unit(27)            -> (27.0, None)
+        parse_value_with_unit(None)          -> (None, None)
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return float(value), None
+    if isinstance(value, (int, float)):
+        return float(value), None
+    s = decode_octet_string(value)
+    if not s:
+        return None, None
+    parts = s.split(maxsplit=1)
+    if len(parts) == 2:
+        try:
+            return float(parts[0]), parts[1]
+        except ValueError:
+            return None, s
+    try:
+        return float(s), None
+    except ValueError:
+        return None, s
+
+
 def decode_walk_results(
     raw: list[tuple[str, Any]],
     oid_root: str,
