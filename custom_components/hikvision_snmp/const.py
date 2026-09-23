@@ -34,32 +34,35 @@ OID_DISK = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.3.1"     # disk / SD-card table
 OID_ALARM = f"{HIKVISION_PRIVATE_MIB_ROOT}.1.5.1"    # alarm input subtree (reserved for v2)
 
 # ---- OID table: which leaf suffixes under each subtree hold which metric ----
+# Each value is a single-component leaf identifier (column index within the
+# subtree). For the system subtree, the trailing instance is `.0` (scalar);
+# for channel and disk tables, the trailing instance is the row index.
 
 SYSTEM_OIDS: dict[str, str] = {
-    "model": "1.1",            # .1.3.6.1.4.1.39165.1.1.1.1.x
-    "device_name": "1.2",
-    "firmware": "1.3",
-    "device_type_code": "1.4", # integer enum code; 1=NVR, 2=DVR, 3=IPC
-    "uptime": "1.5",           # TimeTicks (1/100 s)
-    "cpu": "1.6",              # percent
-    "memory": "1.7",           # percent
-    "temperature": "1.8",      # celsius
+    "model": "1",              # .1.3.6.1.4.1.39165.1.1.1.1.0  (scalar)
+    "device_name": "2",         # .1.3.6.1.4.1.39165.1.1.1.2.0
+    "firmware": "3",           # .1.3.6.1.4.1.39165.1.1.1.3.0
+    "device_type_code": "4",   # .1.3.6.1.4.1.39165.1.1.1.4.0  (enum int: 1=NVR, 2=DVR, 3=IPC)
+    "uptime": "5",             # .1.3.6.1.4.1.39165.1.1.1.5.0  (TimeTicks, 1/100 s)
+    "cpu": "6",                # .1.3.6.1.4.1.39165.1.1.1.6.0  (percent)
+    "memory": "7",             # .1.3.6.1.4.1.39165.1.1.1.7.0  (percent)
+    "temperature": "8",        # .1.3.6.1.4.1.39165.1.1.1.8.0  (celsius)
 }
 
 CHANNEL_OIDS: dict[str, str] = {
-    "name": "1.1",
-    "online": "1.2",           # 1=online, 0=offline
-    "recording": "1.3",        # 1=recording, 0=not
-    "bitrate": "1.4",          # kbps
-    "resolution": "1.5",
+    "name": "1",               # .1.3.6.1.4.1.39165.1.2.1.1.X  (X = channel index)
+    "online": "2",             # 1=online, 0=offline
+    "recording": "3",          # 1=recording, 0=not
+    "bitrate": "4",            # kbps
+    "resolution": "5",
 }
 
 DISK_OIDS: dict[str, str] = {
-    "name": "1.1",
-    "status": "1.2",           # integer enum (1=normal, 2=idle, etc.)
-    "capacity": "1.3",         # MB
-    "free": "1.4",             # MB
-    "temperature": "1.5",      # celsius
+    "name": "1",               # .1.3.6.1.4.1.39165.1.3.1.1.X  (X = disk index)
+    "status": "2",             # enum int (1=normal, 2=idle, etc.)
+    "capacity": "3",           # MB
+    "free": "4",               # MB
+    "temperature": "5",        # celsius
 }
 
 # ---- Config-flow field names ----
