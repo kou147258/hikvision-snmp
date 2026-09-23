@@ -59,11 +59,19 @@ USER_DATA_SCHEMA_BASIC = vol.Schema(
 
 
 def _snmp_data_schema(version: str) -> vol.Schema:
-    """Return the per-version SNMP credential schema."""
+    """Return the per-version SNMP credential schema.
+
+    The returned schema includes ``CONF_VERSION`` itself so the same dict
+    is used for both form display and form-submission validation
+    (voluptuous rejects extra keys by default, so leaving ``CONF_VERSION``
+    out of the validation schema would always fail).
+    """
+    base = {vol.Required(CONF_VERSION, default="v2c"): vol.In(SNMP_VERSIONS)}
     if version == "v2c":
-        return vol.Schema({vol.Required(CONF_COMMUNITY): str})
+        return vol.Schema({**base, vol.Required(CONF_COMMUNITY): str})
     return vol.Schema(
         {
+            **base,
             vol.Required(CONF_USERNAME): str,
             vol.Required(CONF_AUTH_PROTOCOL, default="SHA"): vol.In(V3_AUTH_PROTOCOLS),
             vol.Required(CONF_AUTH_KEY): str,
@@ -140,32 +148,25 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_snmp(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2 — SNMP credentials (v2c community or v3 user)."""
+        """Step 2 — SNMP credentials (v2c community or v3 user).
+
+        The form is rebuilt with the matching per-version schema so that
+        if the user picks v3 and submits with empty v2c fields, they see
+        the v3 fields highlighted on the next render.
+        """
         assert self._basic is not None
         if user_input is None:
-            cred_schema = _snmp_data_schema("v2c")
-            full = vol.Schema(
-                {
-                    vol.Required(CONF_VERSION, default="v2c"): vol.In(SNMP_VERSIONS),
-                    **cred_schema.schema,
-                }
+            return self.async_show_form(
+                step_id="snmp", data_schema=_snmp_data_schema("v2c")
             )
-            return self.async_show_form(step_id="snmp", data_schema=full)
 
         version = user_input.get(CONF_VERSION, "v2c")
         try:
             validated = _snmp_data_schema(version)(user_input)
         except vol.Invalid:
-            cred_schema = _snmp_data_schema(version)
-            full = vol.Schema(
-                {
-                    vol.Required(CONF_VERSION, default=version): vol.In(SNMP_VERSIONS),
-                    **cred_schema.schema,
-                }
-            )
             return self.async_show_form(
                 step_id="snmp",
-                data_schema=full,
+                data_schema=_snmp_data_schema(version),
                 errors={"base": "invalid_snmp_version"},
             )
         self._snmp = validated
