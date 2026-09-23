@@ -1,4 +1,14 @@
-"""Config flow for Hikvision SNMP."""
+"""Config flow for Hikvision SNMP.
+
+Uses the standard HA multi-step config flow pattern:
+- step 1 (``step_id="user"``) — device basics (name, host, port, type)
+- step 2 (``step_id="snmp"``) — SNMP credentials (v2c community or v3 user)
+- step 3 (``step_id="confirm"``) — connection test + entry creation
+
+Each step_id maps 1:1 to an ``async_step_<id>`` method on the
+``HikvisionSnmpConfigFlow`` class — this is the pattern HA's flow manager
+expects, and is what the standard config-flow template generates.
+"""
 
 from __future__ import annotations
 
@@ -64,10 +74,10 @@ def _snmp_data_schema(version: str) -> vol.Schema:
 
 
 async def _test_connection(host: str, port: int, version: str, auth: dict) -> tuple[str | None, str]:
-    """Returns (sysDescr, vendor) on success, (None, "") on failure.
+    """Returns ``(sysDescr, vendor)`` on success, ``(None, "")`` on failure.
 
-    Tries Hikvision IPC MIB (.39165.1.1.0 = model) first; if that fails,
-    falls back to NVR MIB (.50001.1.3.0 = serial). Returns the resolved
+    Tries Hikvision IPC MIB (``.39165.1.1.0`` = model) first; if that fails,
+    falls back to NVR MIB (``.50001.1.3.0`` = serial). Returns the resolved
     sysDescr string and the vendor identifier.
     """
     from .const import (
@@ -99,7 +109,11 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
 
 
 class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Hikvision SNMP."""
+    """Handle a config flow for Hikvision SNMP.
+
+    Three-step flow: ``user`` → ``snmp`` → ``confirm``. Each step_id
+    matches a method below 1:1 — this is the canonical HA pattern.
+    """
 
     VERSION = 1
 
@@ -107,25 +121,26 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
         self._basic: dict[str, Any] | None = None
         self._snmp: dict[str, Any] | None = None
 
-    async def async_step_basic(
+    async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Step 1 — device basics (name, host, port, type).
+
+        This is both the entry point HA calls when the user clicks "Add
+        Integration", AND the handler for the form's submit (because the
+        form below uses ``step_id="user"``).
+        """
         if user_input is None:
             return self.async_show_form(
-                step_id="basic", data_schema=USER_DATA_SCHEMA_BASIC
+                step_id="user", data_schema=USER_DATA_SCHEMA_BASIC
             )
         self._basic = user_input
         return await self.async_step_snmp()
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Entry point — delegates to the ``basic`` step."""
-        return await self.async_step_basic(user_input)
-
     async def async_step_snmp(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Step 2 — SNMP credentials (v2c community or v3 user)."""
         assert self._basic is not None
         if user_input is None:
             cred_schema = _snmp_data_schema("v2c")
@@ -159,6 +174,7 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Step 3 — connection test + entry creation."""
         assert self._basic is not None and self._snmp is not None
         host = self._basic[CONF_HOST]
         port = self._basic.get(CONF_PORT, DEFAULT_PORT)

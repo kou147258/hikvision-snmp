@@ -2,7 +2,7 @@
   "config": {
     "flow_title": "{name}",
     "step": {
-      "basic": {
+      "user": {
         "title": "设备基本信息",
         "description": "请填写海康设备的连接信息。",
         "data": {
