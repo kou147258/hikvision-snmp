@@ -11,8 +11,8 @@ Run this BEFORE copying the integration into HA to validate SNMP works
 and the OIDs return data.
 
 Usage (PowerShell or bash):
-    python tools/snmp_probe.py --host 192.168.10.100 --community public
-    python tools/snmp_probe.py --host 192.168.10.100 --version v3 \\
+    python tools/snmp_probe.py --host 192.0.2.1 --community public
+    python tools/snmp_probe.py --host 192.0.2.1 --version v3 \\
         --username admin --auth-protocol SHA --auth-key 'mykey123' \\
         --privacy-protocol AES128 --privacy-key 'mypriv123'
 

@@ -141,7 +141,7 @@ V5.6.1, `DS-FB2127` on V5.2.2):
 
 ### Hikvision NVR (enterprise 50001) quirks
 
-Verified across three NVRs (`192.168.10.17` / `192.168.10.10` / `192.168.10.9`,
+Verified across three NVRs (`192.168.10.x` / `192.168.10.x` / `192.168.10.x`,
 production dates 2017–2025). All three expose the same flat MIB layout.
 
 1. **NVRs do not expose** `.24` (online) / `.25` (recording) / `.3`

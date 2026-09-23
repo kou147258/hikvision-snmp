@@ -4,8 +4,8 @@ hit timeouts (rate-limit hypothesis) — gives the device time to recover
 and runs a single, isolated walk.
 
 Usage:
-    python tools/walk_only.py --host 10.18.176.10 --oid .1.3.6.1.4.1.39165
-    python tools/walk_only.py --host 10.18.176.10   # defaults to Hikvision root
+    python tools/walk_only.py --host 192.168.1.100 --oid .1.3.6.1.4.1.39165
+    python tools/walk_only.py --host 192.168.1.100   # defaults to Hikvision root
 """
 
 from __future__ import annotations

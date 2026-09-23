@@ -16,10 +16,10 @@ The integration auto-detects the right OID subtree at setup time — no manual
 
 | Device | Model | Firmware | IP | Notes |
 |--------|-------|----------|-----|-------|
-| DS-2DF8C832MX-ZDK PTZ | `DS-2DF8C832MX-ZDK` | V5.10.0 build 260519 | 10.18.176.10 | Busiest device — needs GETBULK auto-disable + GETNEXT with 200 ms inter-request delay. 21/23 scalars reachable via pysnmp walk. |
-| DS-2DE3A20IW-D/GLT/XM IPC | `DS-2DE3A20IW-D/GLT/XM` | V5.7.30 build 260326 | 10.18.176.12 | Stable. Full scalar + channel + disk coverage via pysnmp walk. |
-| DS-FCN8027-VIK | `DS-FCN8027-VIK` | V5.6.1 build 190809 | 10.18.176.13 | Stable. Full scalar coverage. |
-| DS-FB2127 | `DS-FB2127` | V5.2.2 build 150518 | 10.18.176.18 | Oldest firmware in the set. Full scalar coverage; same MIB layout as V5.10. |
+| DS-2DF8C832MX-ZDK PTZ | `DS-2DF8C832MX-ZDK` | V5.10.0 build 260519 | 10.18.176.x | Busiest device — needs GETBULK auto-disable + GETNEXT with 200 ms inter-request delay. 21/23 scalars reachable via pysnmp walk. |
+| DS-2DE3A20IW-D/GLT/XM IPC | `DS-2DE3A20IW-D/GLT/XM` | V5.7.30 build 260326 | 10.18.176.x | Stable. Full scalar + channel + disk coverage via pysnmp walk. |
+| DS-FCN8027-VIK | `DS-FCN8027-VIK` | V5.6.1 build 190809 | 10.18.176.x | Stable. Full scalar coverage. |
+| DS-FB2127 | `DS-FB2127` | V5.2.2 build 150518 | 10.18.176.x | Oldest firmware in the set. Full scalar coverage; same MIB layout as V5.10. |
 
 All four expose the **same V5.x flat MIB** under `.39165.1.<N>.0` — the scalar
 OIDs used by this integration are stable from V5.2 (2015) through V5.10 (2026).
@@ -33,9 +33,9 @@ are stable across production dates 2017–2025.
 
 | IP | Model | Production date | Channels |
 |----|-------|-----------------|----------|
-| 192.168.10.17 | Hikvision NVR (model code 8000) | 2025-10 | 8 |
-| 192.168.10.10 | Hikvision NVR (model code 8000) | 2019-03 | (channels_total from `.240.0`) |
-| 192.168.10.9  | Hikvision NVR (model code 8000) | 2017-07 | 5 |
+| 192.168.10.x | Hikvision NVR (model code 8000) | 2025-10 | 8 |
+| 192.168.10.x | Hikvision NVR (model code 8000) | 2019-03 | (channels_total from `.240.0`) |
+| 192.168.10.x  | Hikvision NVR (model code 8000) | 2017-07 | 5 |
 
 Verification of the NVRs was performed via Linux `snmpwalk` against
 `.1.3.6.1.4.1.50001` (which produces clean output for all leaves) — see the
@@ -69,8 +69,8 @@ function transparently.
 of system scalars + channel/disk sub-trees. Recommended pre-flight:
 
 ```bash
-python tools/snmp_probe.py --host 192.168.10.17 --community public
-python tools/snmp_probe.py --host 10.18.176.10  --community public
+python tools/snmp_probe.py --host 192.168.10.x --community public
+python tools/snmp_probe.py --host 10.18.176.x  --community public
 ```
 
 If you have additional device variants (DVRs, firmware variants older than
