@@ -20,6 +20,7 @@ from pysnmp.hlapi.asyncio import (
     UsmUserData,
     bulkCmd,
     getCmd,
+    nextCmd,
     usm3DESEDEPrivProtocol,
     usmAesCfb128Protocol,
     usmAesCfb192Protocol,
@@ -122,7 +123,25 @@ class HikvisionSnmpClient:
         return await self._do_get_raw([ObjectType(ObjectIdentity(oid))])
 
     async def walk(self, oid_root: str, max_repetitions: int = 25) -> list[tuple[str, Any]]:
-        """GETBULK walk. Returns ``[(oid_str, value), ...]`` for OIDs under oid_root."""
+        """GETBULK walk with GETNEXT fallback.
+
+        First tries GETBULK (fast). If that times out or returns no entries —
+        which happens on some Hikvision V5.x firmware that doesn't implement
+        GETBULK properly — falls back to GETNEXT (one OID per request, slower
+        but universally supported).
+
+        Returns ``[(oid_str, value), ...]`` for OIDs lexicographically >= oid_root.
+        """
+        try:
+            bulk_results = await self._walk_bulk(oid_root, max_repetitions)
+            if bulk_results:
+                return bulk_results
+        except HikvisionSnmpError as exc:
+            _LOGGER.debug("GETBULK walk failed (%s), falling back to GETNEXT", exc)
+        # Fallback: GETNEXT
+        return await self._walk_next(oid_root)
+
+    async def _walk_bulk(self, oid_root: str, max_repetitions: int) -> list[tuple[str, Any]]:
         results: list[tuple[str, Any]] = []
         current = ObjectIdentity(oid_root)
         while True:
@@ -131,9 +150,6 @@ class HikvisionSnmpClient:
                 break
             stop = True
             for var_bind in var_binds:
-                # pysnmp returns VarBind namedtuples of (name, value). Some
-                # edge cases (end-of-mib marker, malformed response) yield a
-                # 1-tuple or empty tuple; skip those defensively.
                 if len(var_bind) < 2:
                     continue
                 oid_str = str(var_bind[0])
@@ -145,6 +161,40 @@ class HikvisionSnmpClient:
                 stop = False
             if stop:
                 break
+        return results
+
+    async def _walk_next(self, oid_root: str) -> list[tuple[str, Any]]:
+        """GETNEXT walk — one OID per request. Universal fallback."""
+        results: list[tuple[str, Any]] = []
+        current = ObjectIdentity(oid_root)
+        while True:
+            try:
+                error_indication, error_status, _, var_binds = await nextCmd(
+                    self._engine,
+                    self._auth_data,
+                    self._target,
+                    ContextData(),
+                    ObjectType(current),
+                    lexicographicMode=False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HikvisionSnmpError(f"next failed: {exc}") from exc
+            if error_indication:
+                # End-of-mib — pysnmp surfaces this as 'no more variables' errorIndication
+                break
+            if error_status:
+                raise HikvisionSnmpError(f"next status: {error_status.prettyPrint()}")
+            if not var_binds:
+                break
+            var_bind = var_binds[0]
+            if len(var_bind) < 2:
+                break
+            oid_str = str(var_bind[0])
+            value = decode_value(var_bind[1])
+            if not oid_str.startswith(oid_root):
+                break
+            results.append((oid_str, value))
+            current = ObjectIdentity(oid_str)
         return results
 
     async def close(self) -> None:
