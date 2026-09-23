@@ -126,8 +126,9 @@ class HikvisionSnmpClient:
         """
         return await self._do_get_raw([ObjectType(ObjectIdentity(oid))])
 
-    async def walk(self, oid_root: str, max_repetitions: int = 25) -> list[tuple[str, Any]]:
-        """GETBULK walk with GETNEXT fallback.
+    async def walk(self, oid_root: str, max_repetitions: int = 25,
+              known_leaves: list[str] | None = None) -> list[tuple[str, Any]]:
+        """GETBULK walk with GETNEXT fallback and single-GET completion.
 
         First tries GETBULK (fast). If that times out or returns no entries —
         which happens on some Hikvision V5.x firmware that doesn't implement
@@ -135,23 +136,45 @@ class HikvisionSnmpClient:
         but universally supported). Once GETBULK fails once for this client,
         bulk is disabled permanently (some firmware is broken on GETBULK).
 
+        If ``known_leaves`` is given, any leaf OIDs in that list that did NOT
+        appear in the walk are patched by issuing a single GET for each. This
+        compensates for transient GETNEXT packet drops (V5.x PTZ firmware
+        occasionally loses GETNEXT responses mid-walk).
+
         Returns ``[(oid_str, value), ...]`` for OIDs lexicographically >= oid_root.
         """
+        results: list[tuple[str, Any]] = []
         if not self._bulk_disabled:
             try:
-                bulk_results = await self._walk_bulk(oid_root, max_repetitions)
-                if bulk_results:
-                    return bulk_results
+                results = await self._walk_bulk(oid_root, max_repetitions)
+                if results:
+                    return results
             except HikvisionSnmpError as exc:
                 self._bulk_disabled = True
                 _LOGGER.debug(
                     "GETBULK walk failed (%s), disabling GETBULK for this client",
                     exc,
                 )
-            else:
-                # bulk_results was empty — try GETNEXT before giving up
-                pass
-        return await self._walk_next(oid_root)
+        # GETNEXT walk
+        next_results = await self._walk_next(oid_root)
+        results.extend(next_results)
+
+        # Single-GET fallback for known leaves the walk missed
+        if known_leaves:
+            walked_oids = {r[0] for r in results}
+            for leaf in known_leaves:
+                full_oid = f"{oid_root.rstrip('.')}.{leaf}.0"
+                # Build the dotted full oid (root.leaf.0) and check if we already have it
+                # The walk returns oids like "1.3.6.1.4.1.39165.1.7.0"
+                # We compute the same shape and skip if already present
+                if full_oid not in walked_oids:
+                    try:
+                        val = await self.get(full_oid)
+                        if val is not None:
+                            results.append((full_oid, val))
+                    except HikvisionSnmpError as exc:
+                        _LOGGER.debug("single GET fallback %s failed: %s", full_oid, exc)
+        return results
 
     async def _walk_bulk(self, oid_root: str, max_repetitions: int) -> list[tuple[str, Any]]:
         results: list[tuple[str, Any]] = []
