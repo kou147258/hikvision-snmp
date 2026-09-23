@@ -1,18 +1,26 @@
 """Tests for the per-host SNMP client wrapper.
 
-Regression coverage for v0.1.11 — the previous ``_test_connection`` helper
-tried to ``client._target = client._target.__class__((host, port),
-timeout=3, retries=2)`` to bump the connection-test timeout, but on some
-pysnmp 6.x builds that round-trip resolves to the wrong ``__init__`` signature
-and raises ``AbstractTransportTarget.__init__() got multiple values for
-argument 'timeout'``, which propagated up as "Failed to connect".
+Coverage spans three releases:
 
-The fix routes timeout/retries through ``HikvisionSnmpClient.__init__`` and
-constructs the target with the right values from the start, so there's no
-rebuild step and no signature mismatch. These tests pin that contract.
+- **v0.1.11** — ``timeout`` / ``retries`` are constructor kwargs (no
+  more ``client._target.__class__((host, port), timeout=3, retries=2)``
+  round-trip that some pysnmp 6.x builds reject as ``got multiple
+  values for argument 'timeout'``).
+- **v0.1.12** — ``SnmpEngine()`` is lazy and constructed in
+  ``asyncio.to_thread`` so HA's blocking-call detector stops
+  flagging ``os.listdir`` / ``open`` against pysnmp's MIB directory.
+- **v0.1.13** — ``UdpTransportTarget`` is also lazy, and the
+  construction dispatches between the pysnmp 6.x synchronous API
+  and the pysnmp 7.x ``UdpTransportTarget.create(...)`` async API
+  via a runtime signature check. HAOS 2026.x ships Python 3.14 with
+  pysnmp 7.x at the system level (``/usr/local/lib/python3.14/site-packages/pysnmp/``),
+  which the integration's manifest pin ``pysnmp<7.0.0`` doesn't
+  override — so we have to support both APIs.
 """
 
 from __future__ import annotations
+
+import asyncio as _asyncio
 
 from custom_components.hikvision_snmp.const import (
     DEFAULT_REQUEST_TIMEOUT,
@@ -21,12 +29,30 @@ from custom_components.hikvision_snmp.const import (
 from custom_components.hikvision_snmp.snmp_client import HikvisionSnmpClient
 
 
+def _reset_engine_singleton() -> None:
+    """Reset module-level engine singleton + lock so tests are isolated."""
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+    client_mod._ENGINE_SINGLETON = None
+    client_mod._ENGINE_INIT_LOCK = None
+    client_mod._UDP_TARGET_API = None
+
+
+async def _build_target(client):
+    """Async helper — drives ``_ensure_engine`` and returns the target."""
+    await client._ensure_engine()
+    return client._target
+
+
+# ---- v0.1.11 — timeout/retries constructor kwargs ----
+
+
 def test_construct_with_default_timeout_and_retries():
     """Defaults come from const.DEFAULT_REQUEST_TIMEOUT / DEFAULT_RETRIES."""
     client = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
                                  auth={"community": "public"})
-    assert client._target.timeout == DEFAULT_REQUEST_TIMEOUT
-    assert client._target.retries == DEFAULT_RETRIES
+    target = _asyncio.run(_build_target(client))
+    assert target.timeout == DEFAULT_REQUEST_TIMEOUT
+    assert target.retries == DEFAULT_RETRIES
 
 
 def test_construct_with_explicit_timeout_and_retries():
@@ -37,8 +63,9 @@ def test_construct_with_explicit_timeout_and_retries():
     client = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
                                  auth={"community": "public"},
                                  timeout=3, retries=2)
-    assert client._target.timeout == 3
-    assert client._target.retries == 2
+    target = _asyncio.run(_build_target(client))
+    assert target.timeout == 3
+    assert target.retries == 2
 
 
 def test_construct_with_only_timeout():
@@ -46,8 +73,9 @@ def test_construct_with_only_timeout():
     client = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
                                  auth={"community": "public"},
                                  timeout=5)
-    assert client._target.timeout == 5
-    assert client._target.retries == DEFAULT_RETRIES
+    target = _asyncio.run(_build_target(client))
+    assert target.timeout == 5
+    assert target.retries == DEFAULT_RETRIES
 
 
 def test_construct_with_only_retries():
@@ -55,8 +83,9 @@ def test_construct_with_only_retries():
     client = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
                                  auth={"community": "public"},
                                  retries=4)
-    assert client._target.timeout == DEFAULT_REQUEST_TIMEOUT
-    assert client._target.retries == 4
+    target = _asyncio.run(_build_target(client))
+    assert target.timeout == DEFAULT_REQUEST_TIMEOUT
+    assert target.retries == 4
 
 
 def test_construct_does_not_raise_abstract_transport_target_error():
@@ -71,12 +100,10 @@ def test_construct_does_not_raise_abstract_transport_target_error():
     client = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
                                  auth={"community": "public"},
                                  timeout=3, retries=2)
-    # If we got here without raising, the constructor succeeded with the
-    # chosen timeout/retries — which is precisely what the v0.1.10 patch
-    # couldn't deliver via __class__ round-trip.
-    assert client._target is not None
-    assert isinstance(client._target.timeout, (int, float))
-    assert isinstance(client._target.retries, int)
+    target = _asyncio.run(_build_target(client))
+    assert target is not None
+    assert isinstance(target.timeout, (int, float))
+    assert isinstance(target.retries, int)
 
 
 # ---- v0.1.12 — lazy / shared SnmpEngine ----
@@ -98,17 +125,14 @@ def test_engine_not_constructed_in_sync_init():
     ('/usr/local/lib/python3.14/site-packages/pysnmp/smi/mibs',)`` warnings
     again on every device the integration polls. Keep construction lazy.
     """
-    import custom_components.hikvision_snmp.snmp_client as client_mod
-    # Snapshot singleton state and reset so the assertion below is
-    # independent of any earlier test having primed it.
-    client_mod._ENGINE_SINGLETON = None
-    client_mod._ENGINE_INIT_LOCK = None
+    _reset_engine_singleton()
 
     c = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
                             auth={"community": "public"})
     assert c._engine is None
     # And the module-level singleton is also still None — nothing should
     # have triggered construction.
+    import custom_components.hikvision_snmp.snmp_client as client_mod
     assert client_mod._ENGINE_SINGLETON is None
 
 
@@ -119,21 +143,13 @@ def test_engine_lazy_init_runs_in_to_thread():
     pysnmp does in ``SnmpEngine.__init__`` happens off the HA event loop,
     so HA's blocking-call detector stops complaining.
     """
-    import asyncio as _asyncio
     from unittest.mock import patch
 
-    import custom_components.hikvision_snmp.snmp_client as client_mod
-    client_mod._ENGINE_SINGLETON = None
-    client_mod._ENGINE_INIT_LOCK = None
+    _reset_engine_singleton()
 
     constructed_in_thread: list[bool] = []
-    real_to_thread = _asyncio.to_thread
 
     async def fake_to_thread(func, /, *args, **kwargs):
-        # Note: ``func`` runs here in the asyncio event loop thread, but
-        # the integration code does NOT await ``real_to_thread`` — it
-        # awaits ``fake_to_thread``. We record the call and return a stub
-        # engine so the test stays synchronous.
         constructed_in_thread.append(True)
         return object()  # sentinel
 
@@ -147,10 +163,8 @@ def test_engine_lazy_init_runs_in_to_thread():
     engine = _asyncio.run(driver())
     assert constructed_in_thread == [True]
     assert engine is not None  # whatever fake_to_thread returned
-    # And ``_get_shared_engine`` actually populates the module singleton.
+    import custom_components.hikvision_snmp.snmp_client as client_mod
     assert client_mod._ENGINE_SINGLETON is not None
-    # Restore real to_thread so other tests aren't affected.
-    assert real_to_thread is _asyncio.to_thread  # sanity
 
 
 def test_clients_share_one_engine_singleton():
@@ -160,11 +174,7 @@ def test_clients_share_one_engine_singleton():
     (off-loop now, but still non-trivial). Sharing the singleton means
     N devices cost 480 ms total, not N × 480 ms.
     """
-    import asyncio as _asyncio
-
-    import custom_components.hikvision_snmp.snmp_client as client_mod
-    client_mod._ENGINE_SINGLETON = None
-    client_mod._ENGINE_INIT_LOCK = None
+    _reset_engine_singleton()
 
     async def driver():
         c1 = HikvisionSnmpClient(host="10.0.0.1", port=161, version="v2c",
@@ -182,32 +192,186 @@ def test_clients_share_one_engine_singleton():
 
 
 def test_close_is_noop_and_does_not_tear_down_shared_dispatcher():
-    """``client.close()`` must not call ``closeDispatcher`` on the shared engine.
-
-    With a shared engine, one client tearing down the dispatcher would
-    break all the other clients in the same process. ``close()`` is a
-    documented no-op; HA shutdown recycles the dispatcher via the asyncio
-    loop exiting.
-    """
-    import asyncio as _asyncio
-
-    import custom_components.hikvision_snmp.snmp_client as client_mod
-    client_mod._ENGINE_SINGLETON = None
-    client_mod._ENGINE_INIT_LOCK = None
+    """``client.close()`` must not call ``closeDispatcher`` on the shared engine."""
+    _reset_engine_singleton()
 
     async def driver():
         c = HikvisionSnmpClient(host="10.0.0.1", port=161, version="v2c",
                                 auth={"community": "public"})
         await c._ensure_engine()
-        # If close() called _engine.closeDispatcher() we'd have nothing
-        # left to assert against. closeDispatcher must NOT have been
-        # called on the shared singleton.
         before = c._engine
         await c.close()
         return before
 
     engine_before = _asyncio.run(driver())
-    # The shared singleton is the same object after close(); only the
-    # dispatcher attribute would have been cleared by closeDispatcher.
+    import custom_components.hikvision_snmp.snmp_client as client_mod
     assert engine_before is client_mod._ENGINE_SINGLETON
     assert client_mod._ENGINE_SINGLETON is not None
+
+
+# ---- v0.1.13 — lazy / pysnmp-version-aware UdpTransportTarget ----
+#
+# HAOS 2026.x ships Python 3.14 with pysnmp 7.x pre-installed at the
+# system level. pysnmp 7.x's ``UdpTransportTarget.__init__`` signature is
+# ``(self, timeout=1, retries=5, tagList=b'')`` — completely incompatible
+# with pysnmp 6.x's ``(self, transportAddr, timeout=1, retries=5, tagList=b'')``.
+# Calling the 6.x pattern against pysnmp 7.x raises
+# ``TypeError: AbstractTransportTarget.__init__() got multiple values for
+# argument 'timeout'`` (positional `(host, port)` collides with the new
+# `timeout` first arg).
+#
+# The fix detects the API at runtime via ``inspect.signature`` and adapts.
+
+
+def test_target_not_constructed_in_sync_init():
+    """Regression guard for v0.1.13 — ``UdpTransportTarget`` is lazy.
+
+    If this test ever fails because ``__init__`` started constructing the
+    target synchronously again, HAOS users with pysnmp 7.x will start
+    seeing ``AbstractTransportTarget.__init__() got multiple values for
+    argument 'timeout'`` errors at construction time again — pre-empting
+    every config-flow connection test. Keep construction lazy.
+    """
+    _reset_engine_singleton()
+
+    c = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
+                            auth={"community": "public"})
+    assert c._target is None
+
+
+def test_pysnmp_v6_api_uses_sync_constructor():
+    """When pysnmp 6.x is installed, target is built with the legacy sync API.
+
+    The detection logic caches ``_UDP_TARGET_API = "v6"`` the first time
+    it's checked. With that cached, ``_build_udp_target`` returns a target
+    via the synchronous ``UdpTransportTarget((host, port), ...)`` path
+    — no ``await`` on the create() classmethod.
+    """
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeV6UdpTarget:
+        def __init__(self, addr, *, timeout, retries):
+            self.addr = addr
+            self.timeout = timeout
+            self.retries = retries
+
+    async def driver():
+        c = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
+                                auth={"community": "public"},
+                                timeout=3, retries=2)
+        with patch.object(client_mod, "UdpTransportTarget", FakeV6UdpTarget):
+            client_mod._UDP_TARGET_API = "v6"
+            await c._ensure_engine()
+        return c._target
+
+    target = _asyncio.run(driver())
+    assert isinstance(target, FakeV6UdpTarget)
+    assert target.addr == ("127.0.0.1", 161)
+    assert target.timeout == 3
+    assert target.retries == 2
+
+
+def test_pysnmp_v7_api_uses_async_create():
+    """When pysnmp 7.x is installed, target is built via ``await UdpTransportTarget.create(...)``.
+
+    The detection logic caches ``_UDP_TARGET_API = "v7"``. ``_build_udp_target``
+    awaits ``UdpTransportTarget.create((host, port), ...)`` and returns the
+    result — no positional ``UdpTransportTarget.__init__`` call.
+    """
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeV7UdpTarget:
+        """Mimics pysnmp 7.x's UdpTransportTarget with a .create() classmethod."""
+
+        @classmethod
+        async def create(cls, addr, *, timeout, retries):
+            inst = cls()
+            inst.addr = addr
+            inst.timeout = timeout
+            inst.retries = retries
+            return inst
+
+    async def driver():
+        c = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
+                                auth={"community": "public"},
+                                timeout=3, retries=2)
+        with patch.object(client_mod, "UdpTransportTarget", FakeV7UdpTarget):
+            client_mod._UDP_TARGET_API = "v7"
+            await c._ensure_engine()
+        return c._target
+
+    target = _asyncio.run(driver())
+    assert isinstance(target, FakeV7UdpTarget)
+    assert target.addr == ("127.0.0.1", 161)
+    assert target.timeout == 3
+    assert target.retries == 2
+
+
+def test_detection_picks_v6_when_transportAddr_in_signature():
+    """``_detect_udp_target_api`` returns ``"v6"`` when ``transportAddr`` is a param.
+
+    Simulates the pysnmp 6.x ``UdpTransportTarget.__init__`` signature.
+    """
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeV6Ctor:
+        def __init__(self, transportAddr, timeout=1, retries=5, tagList=b""):
+            pass
+
+    with patch.object(client_mod, "UdpTransportTarget", FakeV6Ctor):
+        client_mod._UDP_TARGET_API = None
+        assert client_mod._detect_udp_target_api() == "v6"
+        assert client_mod._udp_target_api() == "v6"  # cached
+
+
+def test_detection_picks_v7_when_transportAddr_missing():
+    """``_detect_udp_target_api`` returns ``"v7"`` when ``transportAddr`` is absent.
+
+    Simulates the pysnmp 7.x ``UdpTransportTarget.__init__`` signature
+    ``(self, timeout=1, retries=5, tagList=b'')`` — the case where
+    ``AbstractTransportTarget.__init__() got multiple values for argument
+    'timeout'`` was raised at every config-flow test attempt on HAOS 2026.x.
+    """
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeV7Ctor:
+        def __init__(self, timeout=1, retries=5, tagList=b""):
+            pass
+
+    with patch.object(client_mod, "UdpTransportTarget", FakeV7Ctor):
+        client_mod._UDP_TARGET_API = None
+        assert client_mod._detect_udp_target_api() == "v7"
+        assert client_mod._udp_target_api() == "v7"  # cached
+
+
+def test_engine_and_target_built_in_same_ensure_call():
+    """``_ensure_engine`` populates both ``_engine`` and ``_target`` in one call."""
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeUdpTarget:
+        def __init__(self, addr, *, timeout, retries):
+            self.timeout = timeout
+            self.retries = retries
+
+    async def driver():
+        c = HikvisionSnmpClient(host="127.0.0.1", port=161, version="v2c",
+                                auth={"community": "public"})
+        with patch.object(client_mod, "UdpTransportTarget", FakeUdpTarget):
+            client_mod._UDP_TARGET_API = "v6"
+            await c._ensure_engine()
+        return c._engine, c._target
+
+    engine, target = _asyncio.run(driver())
+    assert engine is not None
+    assert target is not None
+    assert isinstance(target, FakeUdpTarget)

@@ -99,6 +99,67 @@ async def _get_shared_engine() -> SnmpEngine:
     return _ENGINE_SINGLETON
 
 
+# ---- Runtime pysnmp-API detection ----
+#
+# pysnmp 6.x (``UdpTransportTarget((host, port), timeout=N, retries=M)``) and
+# pysnmp 7.x (``await UdpTransportTarget.create((host, port), timeout=N,
+# retries=M)``) have completely incompatible ``__init__`` signatures for
+# UdpTransportTarget. The v7 constructor takes only ``(timeout, retries,
+# tagList)`` and refuses the positional address tuple, raising
+# ``AbstractTransportTarget.__init__() got multiple values for argument
+# 'timeout'`` if you pass it positionally.
+#
+# HAOS 2026.x ships with Python 3.14 and pulls pysnmp 7.x at the system
+# level (``/usr/local/lib/python3.14/site-packages/pysnmp/``); the
+# manifest pin ``pysnmp>=6.2.6,<7.0.0`` doesn't override that. So we have
+# to detect at runtime and adapt.
+#
+# Detection: inspect ``UdpTransportTarget.__init__`` signature once per
+# process. If ``transportAddr`` is a parameter, it's pysnmp 6.x. Otherwise
+# it's pysnmp 7.x and we have to await ``UdpTransportTarget.create(...)``.
+
+
+def _detect_udp_target_api() -> str:
+    """Return ``"v6"`` or ``"v7"`` based on ``UdpTransportTarget.__init__``.
+
+    Result is cached at module level because the inspection is cheap but
+    we want the result to be consistent for the process lifetime.
+    """
+    import inspect as _inspect
+    sig = _inspect.signature(UdpTransportTarget.__init__)
+    if "transportAddr" in sig.parameters:
+        return "v6"
+    return "v7"
+
+
+_UDP_TARGET_API: str | None = None
+
+
+def _udp_target_api() -> str:
+    """Cached wrapper around ``_detect_udp_target_api()``."""
+    global _UDP_TARGET_API
+    if _UDP_TARGET_API is None:
+        _UDP_TARGET_API = _detect_udp_target_api()
+    return _UDP_TARGET_API
+
+
+async def _build_udp_target(host: str, port: int, timeout: float, retries: int):
+    """Build a ``UdpTransportTarget`` against whatever pysnmp version is loaded.
+
+    pysnmp 6.x is synchronous: ``UdpTransportTarget((host, port), ...)``.
+    pysnmp 7.x is async: ``await UdpTransportTarget.create((host, port), ...)``.
+    The 7.x signature doesn't even accept the address positionally — it
+    raises ``AbstractTransportTarget.__init__() got multiple values for
+    argument 'timeout'`` if you try, which is exactly the bug this
+    function dodges.
+    """
+    api = _udp_target_api()
+    if api == "v6":
+        return UdpTransportTarget((host, port), timeout=timeout, retries=retries)
+    # pysnmp 7.x
+    return await UdpTransportTarget.create((host, port), timeout=timeout, retries=retries)
+
+
 # ---- Protocol name → pysnmp protocol-object maps ----
 
 _AUTH_PROTOCOLS = {
@@ -175,17 +236,26 @@ class HikvisionSnmpClient:
         self._port = port
         self._version = version
         self._auth = auth or {}
-        # SnmpEngine is lazy-initialised in ``_ensure_engine`` on the first
-        # request so its blocking MIB-directory FS scan (``os.listdir`` /
-        # ``open`` on ``<pysnmp>/smi/mibs/``) never runs on the HA event
-        # loop. See module docstring above for the full rationale.
-        self._engine: SnmpEngine | None = None
-        self._auth_data = _build_auth(version, self._auth)
-        self._target = UdpTransportTarget(
-            (host, port),
-            timeout=timeout if timeout is not None else DEFAULT_REQUEST_TIMEOUT,
-            retries=retries if retries is not None else DEFAULT_RETRIES,
+        self._resolved_timeout = (
+            timeout if timeout is not None else DEFAULT_REQUEST_TIMEOUT
         )
+        self._resolved_retries = (
+            retries if retries is not None else DEFAULT_RETRIES
+        )
+        # ``SnmpEngine`` AND ``UdpTransportTarget`` are both lazy-initialised
+        # in ``_ensure_engine`` on the first request. The engine build runs
+        # in ``asyncio.to_thread`` to keep its blocking MIB-directory FS
+        # scan off the HA event loop, and the target is built against
+        # whatever pysnmp API the runtime has — pysnmp 6.x takes a sync
+        # ``UdpTransportTarget((host, port), timeout=..., retries=...)``,
+        # pysnmp 7.x takes ``await UdpTransportTarget.create((host, port),
+        # timeout=..., retries=...)`` — both of which have to be detected at
+        # runtime since the manifest pin ``pysnmp<7.0.0`` doesn't override
+        # a system-level pysnmp 7.x on HAOS 2026.x. See module docstring
+        # above for the full rationale.
+        self._engine: SnmpEngine | None = None
+        self._target: Any | None = None
+        self._auth_data = _build_auth(version, self._auth)
         # Once GETBULK times out on this client, skip it forever after. Some
         # Hikvision V5.x PTZ firmwares don't implement GETBULK; we don't want
         # to spend 4-6s per walk retrying a known-broken op.
@@ -408,18 +478,33 @@ class HikvisionSnmpClient:
     # ---- internal ----
 
     async def _ensure_engine(self) -> SnmpEngine:
-        """Lazy-init the shared ``SnmpEngine`` on first use.
+        """Lazy-init the shared ``SnmpEngine`` AND this client's target on first use.
 
-        Construction runs in ``asyncio.to_thread`` so pysnmp's blocking
-        ``os.listdir`` / ``open`` calls against its MIB directory don't
-        trip HA's event-loop blocking-call monitor. Safe to call from
-        every public async method — fast-paths when the singleton is
-        already built. ``self._engine`` is also populated as a
-        convenience so the rest of the class keeps its existing
-        ``self._engine`` reference.
+        The engine build runs in ``asyncio.to_thread`` so pysnmp's
+        blocking ``os.listdir`` / ``open`` calls against its MIB
+        directory don't trip HA's event-loop blocking-call monitor.
+
+        The target build (also lazy) dispatches between the pysnmp 6.x
+        and 7.x APIs based on a runtime signature check, because the
+        manifest pin ``pysnmp<7.0.0`` doesn't override a system-level
+        pysnmp 7.x on HAOS 2026.x and the two APIs have incompatible
+        constructors. See ``_build_udp_target`` for the dispatch logic.
+
+        Safe to call from every public async method — fast-paths when
+        the singleton is already built. ``self._engine`` and
+        ``self._target`` are also populated as a convenience so the
+        rest of the class keeps its existing ``self._engine`` /
+        ``self._target`` references.
         """
         if self._engine is None:
             self._engine = await _get_shared_engine()
+        if self._target is None:
+            self._target = await _build_udp_target(
+                self._host,
+                self._port,
+                self._resolved_timeout,
+                self._resolved_retries,
+            )
         return self._engine
 
     async def _do_get_raw(self, var_binds_in):
