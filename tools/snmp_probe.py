@@ -105,6 +105,7 @@ async def main() -> int:
     parser.add_argument("--auth-key", default="")
     parser.add_argument("--privacy-protocol", default="AES128")
     parser.add_argument("--privacy-key", default="")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging")
     args = parser.parse_args()
 
     if args.version == "v2c":
