@@ -42,19 +42,18 @@ async def _walk_vendor_subtree(
 
 
 async def _probe_sys_descr(client: HikvisionSnmpClient, mib_root: str) -> str | None:
-    """Single GET for vendor's model-equivalent scalar. Returns decoded string or None."""
-    # Both vendors expose a model-equivalent at <root>.1.<index>.0 where index is
-    # the first system scalar OID. We rely on auto-detect: try each vendor's
-    # well-known first OID, return which one is non-empty.
-    candidate_oids = [
-        # IPC: model is at .39165.1.1.0
-        f"{HIKVISION_IPC_MIB_ROOT}.1.1.0",
-    ]
+    """Single GET for vendor's model-equivalent scalar. Returns decoded string or None.
+
+    IPC exposes model at ``.39165.1.1.0``; NVR exposes serial at ``.50001.1.3.0``
+    (the closest thing to a sysDescr equivalent on the 50001 MIB). If the
+    GET returns a non-empty value, the vendor is considered reachable.
+    """
     if mib_root == HIKVISION_NVR_MIB_ROOT:
-        # NVR: model_code at .50001.1.2.0 (string is serial at .3.0)
-        candidate_oids.append(f"{HIKVISION_NVR_MIB_ROOT}.1.3.0")
+        oid = f"{HIKVISION_NVR_MIB_ROOT}.1.3.0"
+    else:
+        oid = f"{HIKVISION_IPC_MIB_ROOT}.1.1.0"
     try:
-        val = await client.get(candidate_oids[0] if mib_root == HIKVISION_IPC_MIB_ROOT else candidate_oids[1])
+        val = await client.get(oid)
     except Exception:  # noqa: BLE001
         return None
     if val is None:
