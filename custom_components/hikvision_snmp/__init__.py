@@ -40,26 +40,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_SCAN_INTERVAL, data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     )
 
-    version = data[CONF_VERSION]
+    version = data.get(CONF_VERSION, "v2c")
     if version == "v2c":
-        auth = {"community": data[CONF_COMMUNITY]}
+        auth = {"community": data.get(CONF_COMMUNITY, "")}
     else:
         auth = {
-            "username": data[CONF_USERNAME],
-            "auth_protocol": data[CONF_AUTH_PROTOCOL],
-            "auth_key": data[CONF_AUTH_KEY],
-            "privacy_protocol": data[CONF_PRIVACY_PROTOCOL],
-            "priv_key": data[CONF_PRIVACY_KEY],
+            "username": data.get(CONF_USERNAME, ""),
+            "auth_protocol": data.get(CONF_AUTH_PROTOCOL, "SHA"),
+            "auth_key": data.get(CONF_AUTH_KEY, ""),
+            "privacy_protocol": data.get(CONF_PRIVACY_PROTOCOL, "AES128"),
+            "priv_key": data.get(CONF_PRIVACY_KEY, ""),
         }
 
-    client = HikvisionSnmpClient(
-        host=data[CONF_HOST],
-        port=data.get(CONF_PORT, 161),
-        version=version,
-        auth=auth,
-    )
+    # Wrap client construction in try/except — ``UdpTransportTarget`` raises
+    # ``socket.gaierror`` for unresolvable hostnames at construction time
+    # (not at request time), which is not in HikvisionSnmpError's hierarchy
+    # and would otherwise turn into an unrecoverable entry-setup failure.
+    try:
+        client = HikvisionSnmpClient(
+            host=data[CONF_HOST],
+            port=data.get(CONF_PORT, 161),
+            version=version,
+            auth=auth,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.error(
+            "Failed to construct SNMP client for %s: %s", data.get(CONF_HOST), exc
+        )
+        return False
 
-    vendor, identification, channel_counts = await async_identify_device(client)
+    try:
+        vendor, identification, channel_counts = await async_identify_device(client)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.error("Failed to identify device %s: %s", data[CONF_HOST], exc)
+        await client.close()
+        return False
     channel_count = channel_counts.get("channels", 0)
     device_info = build_device_info(
         entry.entry_id,
