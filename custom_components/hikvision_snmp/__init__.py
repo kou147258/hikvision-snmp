@@ -59,16 +59,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         auth=auth,
     )
 
-    identification = await async_identify_device(client)
+    vendor, identification, channel_counts = await async_identify_device(client)
+    channel_count = channel_counts.get("channels", 0)
     device_info = build_device_info(
         entry.entry_id,
         data[CONF_HOST],
+        vendor,
         identification,
         data.get(CONF_NAME, f"Hikvision {data[CONF_HOST]}"),
     )
 
     coordinator = HikvisionDataUpdateCoordinator(
-        hass, client, scan_interval=scan_interval, identification=identification
+        hass,
+        client,
+        scan_interval=scan_interval,
+        vendor=vendor,
+        identification=identification,
+        channel_count=channel_count,
     )
     coordinator.device_info = device_info
 

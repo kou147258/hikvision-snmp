@@ -29,7 +29,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEVICE_TYPES,
     DOMAIN,
-    HIKVISION_PRIVATE_MIB_ROOT,
+    HIKVISION_IPC_MIB_ROOT,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
     SNMP_VERSIONS,
@@ -63,18 +63,39 @@ def _snmp_data_schema(version: str) -> vol.Schema:
     )
 
 
-async def _test_connection(host: str, port: int, version: str, auth: dict) -> str | None:
-    """Returns sysDescr string on success, None on failure."""
+async def _test_connection(host: str, port: int, version: str, auth: dict) -> tuple[str | None, str]:
+    """Returns (sysDescr, vendor) on success, (None, "") on failure.
+
+    Tries Hikvision IPC MIB (.39165.1.1.0 = model) first; if that fails,
+    falls back to NVR MIB (.50001.1.3.0 = serial). Returns the resolved
+    sysDescr string and the vendor identifier.
+    """
+    from .const import (
+        HIKVISION_NVR_MIB_ROOT,
+        VENDOR_HIKVISION_IPC,
+        VENDOR_HIKVISION_NVR,
+    )
+
     client = HikvisionSnmpClient(host=host, port=port, version=version, auth=auth)
     try:
-        sys_descr = await client.get(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1.1.0")
-    except HikvisionSnmpError:
+        # Try IPC root first
+        for ipc_oid in (f"{HIKVISION_IPC_MIB_ROOT}.1.1.0", f"{HIKVISION_IPC_MIB_ROOT}.1.1.1.1.0"):
+            try:
+                val = await client.get(ipc_oid)
+                if val:
+                    return str(val), VENDOR_HIKVISION_IPC
+            except HikvisionSnmpError:
+                continue
+        # Fall back to NVR root
+        try:
+            val = await client.get(f"{HIKVISION_NVR_MIB_ROOT}.1.3.0")
+            if val:
+                return str(val), VENDOR_HIKVISION_NVR
+        except HikvisionSnmpError:
+            pass
+    finally:
         await client.close()
-        return None
-    await client.close()
-    if not sys_descr:
-        return None
-    return str(sys_descr)
+    return None, ""
 
 
 class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -150,7 +171,7 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(f"{host}:{port}")
         self._abort_if_unique_id_configured()
 
-        result = await _test_connection(host, port, version, auth)
+        result, vendor = await _test_connection(host, port, version, auth)
         if not result:
             return self.async_show_form(
                 step_id="confirm",
@@ -164,6 +185,7 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
                 **self._basic,
                 **self._snmp,
                 CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                "vendor": vendor,
             },
         )
 
