@@ -1,7 +1,7 @@
 {
   "domain": "hikvision_snmp",
   "name": "Hikvision SNMP",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "documentation": "https://github.com/kou147258/hikvision-snmp",
   "issue_tracker": "https://github.com/kou147258/hikvision-snmp/issues",
   "codeowners": ["@kou147258"],

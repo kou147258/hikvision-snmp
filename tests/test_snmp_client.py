@@ -375,3 +375,109 @@ def test_engine_and_target_built_in_same_ensure_call():
     assert engine is not None
     assert target is not None
     assert isinstance(target, FakeUdpTarget)
+
+
+# ---- v0.1.14 — pysnmp 7.x renamed get/bulk/next cmd functions too ----
+#
+# pysnmp 7.x renamed the cmd functions, not just the target:
+#
+#   pysnmp 6.x: getCmd, bulkCmd, nextCmd   (camelCase, top of module)
+#   pysnmp 7.x: get_cmd, bulk_cmd, next_cmd   (snake_case)
+#
+# Using ``from pysnmp.hlapi.asyncio import bulkCmd, getCmd, nextCmd`` makes
+# the entire ``snmp_client`` module fail to LOAD on pysnmp 7.x with
+# ImportError — which breaks HA's integration loader, prevents
+# config_flow.py from registering, and surfaces to the user as
+# "无法加载配置向导: Invalid handler specified" when they try to add
+# the integration. The fix is a runtime resolver that picks whichever
+# naming convention the loaded pysnmp exposes.
+
+
+def test_cmd_functions_resolve_to_camelcase_under_pysnmp_v6():
+    """Under pysnmp 6.x, ``_resolve_cmd_functions`` returns the camelCase names."""
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeV6Hlapi:
+        def getCmd(self): pass
+        def bulkCmd(self): pass
+        def nextCmd(self): pass
+
+    real_hlapi = client_mod._pysnmp_hlapi
+    try:
+        client_mod._pysnmp_hlapi = FakeV6Hlapi
+        get, bulk, nxt = client_mod._resolve_cmd_functions()
+        assert get.__name__ == "getCmd"
+        assert bulk.__name__ == "bulkCmd"
+        assert nxt.__name__ == "nextCmd"
+    finally:
+        client_mod._pysnmp_hlapi = real_hlapi
+
+
+def test_cmd_functions_resolve_to_snakecase_under_pysnmp_v7():
+    """Under pysnmp 7.x, ``_resolve_cmd_functions`` returns the snake_case names.
+
+    This is the path HAOS 2026.x hits because pysnmp 7.1.29 is pre-installed
+    at ``/usr/local/lib/python3.14/site-packages/pysnmp/`` and the module
+    load would ImportError on the camelCase ``from ... import`` statement.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class FakeV7Hlapi:
+        def get_cmd(self): pass
+        def bulk_cmd(self): pass
+        def next_cmd(self): pass
+
+    real_hlapi = client_mod._pysnmp_hlapi
+    try:
+        client_mod._pysnmp_hlapi = FakeV7Hlapi
+        get, bulk, nxt = client_mod._resolve_cmd_functions()
+        assert get.__name__ == "get_cmd"
+        assert bulk.__name__ == "bulk_cmd"
+        assert nxt.__name__ == "next_cmd"
+    finally:
+        client_mod._pysnmp_hlapi = real_hlapi
+
+
+def test_cmd_functions_raise_when_no_variant_found():
+    """If neither camelCase nor snake_case exists, raise a clear ImportError.
+
+    Defensive — catches a future pysnmp 8.x (or anything else) that
+    renames these functions again. The error message mentions where to
+    add a new variant.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class EmptyHlapi:
+        pass
+
+    real_hlapi = client_mod._pysnmp_hlapi
+    try:
+        client_mod._pysnmp_hlapi = EmptyHlapi
+        try:
+            client_mod._resolve_cmd_functions()
+        except ImportError as exc:
+            assert "pysnmp" in str(exc)
+            assert "_resolve_cmd_functions" in str(exc)
+            return
+        raise AssertionError("expected ImportError, got none")
+    finally:
+        client_mod._pysnmp_hlapi = real_hlapi
+
+
+def test_module_does_not_eagerly_import_camelcase_cmd_names():
+    """Regression guard for v0.1.14 — the module must not raise ImportError on pysnmp 7.x.
+
+    This is the headline bug: before v0.1.14, ``snmp_client.py`` did
+    ``from pysnmp.hlapi.asyncio import bulkCmd, getCmd, nextCmd`` which
+    raises ``ImportError: cannot import name 'bulkCmd'`` on pysnmp 7.x
+    — failing at module load time and surfacing as
+    "无法加载配置向导: Invalid handler specified" in HA.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+    # If module load had failed, this attribute wouldn't exist at all.
+    assert hasattr(client_mod, "_resolve_cmd_functions")
+    # And the resolved function names must match what the loaded pysnmp has.
+    get, bulk, nxt = client_mod._resolve_cmd_functions()
+    assert callable(get)
+    assert callable(bulk)
+    assert callable(nxt)

@@ -18,9 +18,6 @@ from pysnmp.hlapi.asyncio import (
     SnmpEngine,
     UdpTransportTarget,
     UsmUserData,
-    bulkCmd,
-    getCmd,
-    nextCmd,
     usm3DESEDEPrivProtocol,
     usmAesCfb128Protocol,
     usmAesCfb192Protocol,
@@ -33,8 +30,50 @@ from pysnmp.hlapi.asyncio import (
     usmHMACMD5AuthProtocol,
     usmHMACSHAAuthProtocol,
 )
+# IMPORTANT: do NOT use ``from pysnmp.hlapi.asyncio import getCmd, bulkCmd,
+# nextCmd`` here — those names exist only in pysnmp 6.x. pysnmp 7.x renamed
+# them to ``get_cmd``, ``bulk_cmd``, ``next_cmd``. Importing them positionally
+# makes the module LOAD raise ImportError on pysnmp 7.x, which breaks HA's
+# integration loader — config_flow becomes unreachable and HA surfaces
+# "无法加载配置向导: Invalid handler specified" when the user tries to add
+# the integration. Resolve at runtime via ``_resolve_cmd_functions`` below.
+import pysnmp.hlapi.asyncio as _pysnmp_hlapi
 from pysnmp.proto.api import v2c as api_v2c
 from pysnmp.proto.rfc1905 import NoSuchInstance, NoSuchObject
+
+
+def _resolve_cmd_functions():
+    """Resolve ``get`` / ``bulk`` / ``next`` cmd function names across pysnmp major versions.
+
+    Returns ``(get_cmd, bulk_cmd, next_cmd)`` as a tuple of callables, using
+    whichever naming convention the loaded pysnmp exposes:
+
+    - pysnmp 6.x: camelCase — ``getCmd``, ``bulkCmd``, ``nextCmd``
+    - pysnmp 7.x: snake_case — ``get_cmd``, ``bulk_cmd``, ``next_cmd``
+
+    Tries camelCase first because that's the legacy convention the rest
+    of this module uses internally (variables are named ``_do_get_raw``,
+    ``_do_bulk``, ``_walk_next`` to match). Falls back to snake_case if
+    any camelCase name is missing. Raises ImportError with an actionable
+    message if neither variant is found (i.e. some future pysnmp 8.x
+    renamed the API again — at that point, add a third branch here).
+    """
+    variants = (
+        ("getCmd", "bulkCmd", "nextCmd"),     # pysnmp 6.x
+        ("get_cmd", "bulk_cmd", "next_cmd"),  # pysnmp 7.x
+    )
+    for variant in variants:
+        if all(hasattr(_pysnmp_hlapi, name) for name in variant):
+            return tuple(getattr(_pysnmp_hlapi, name) for name in variant)
+    raise ImportError(
+        "Could not locate get/bulk/next cmd functions in pysnmp.hlapi.asyncio; "
+        "tried camelCase (pysnmp 6.x) and snake_case (pysnmp 7.x). If a "
+        "future pysnmp release renamed them again, add another variant to "
+        "_resolve_cmd_functions()."
+    )
+
+
+getCmd, bulkCmd, nextCmd = _resolve_cmd_functions()
 
 from .const import DEFAULT_PORT, DEFAULT_REQUEST_TIMEOUT, DEFAULT_RETRIES
 
