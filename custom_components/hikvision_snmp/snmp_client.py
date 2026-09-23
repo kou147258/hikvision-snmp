@@ -112,7 +112,7 @@ class HikvisionSnmpClient:
         var_binds = await self._do_get([ObjectType(ObjectIdentity(oid))])
         if not var_binds:
             return None
-        return _decode_value(var_binds[0][1])
+        return _decode_value(_var_bind_value(var_binds[0]))
 
     async def get_raw(self, oid: str) -> tuple[Any, Any, Any]:
         """Diagnostic variant — returns (error_indication, error_status, var_binds).
@@ -149,14 +149,16 @@ class HikvisionSnmpClient:
             if not var_binds:
                 break
             stop = True
-            for var_bind in var_binds:
-                if len(var_bind) < 2:
+            # pysnmp 6.x bulkCmd returns 2-D var_binds: outer = rows, inner = ObjectTypes.
+            # Each row is a list of ObjectType namedtuples. Flatten to one iterable
+            # of ObjectType objects for this iteration.
+            for vb in _iter_object_types(var_binds):
+                oid_str, decoded = _decode_var_bind(vb)
+                if oid_str is None:
                     continue
-                oid_str = str(var_bind[0])
-                value = decode_value(var_bind[1])
                 if not oid_str.startswith(oid_root):
                     return results
-                results.append((oid_str, value))
+                results.append((oid_str, decoded))
                 current = ObjectIdentity(oid_str)
                 stop = False
             if stop:
@@ -196,12 +198,13 @@ class HikvisionSnmpClient:
                 raise HikvisionSnmpError(f"next status: {error_status.prettyPrint()}")
             if not var_binds:
                 break
-            var_bind = var_binds[0]
-            if len(var_bind) < 2:
-                _LOGGER.debug("_walk_next iter=%d short var_bind: %r", iteration, var_bind)
+            # nextCmd returns 2-D [[ObjectType]]; take the first ObjectType.
+            first_object_type = next(iter(_iter_object_types(var_binds)), None)
+            if first_object_type is None:
                 break
-            oid_str = str(var_bind[0])
-            value = decode_value(var_bind[1])
+            oid_str, value = _decode_var_bind(first_object_type)
+            if oid_str is None:
+                break
             _LOGGER.debug(
                 "_walk_next iter=%d returned oid=%r value=%r root=%r starts_with=%s",
                 iteration, oid_str, value, oid_root, oid_str.startswith(oid_root),
@@ -271,6 +274,49 @@ def decode_value(value: Any) -> Any:
         return value.prettyPrint()
     except Exception:  # noqa: BLE001
         return str(value)
+
+
+def _iter_object_types(var_binds: Any) -> Any:
+    """Iterate ObjectType instances from a pysnmp 6.x var_binds response.
+
+    ``getCmd`` returns ``[ObjectType, ...]`` (1-D).
+    ``nextCmd`` / ``bulkCmd`` return ``[[ObjectType, ...], ...]`` (2-D: rows
+    of columns). This helper yields each ObjectType regardless of shape.
+    """
+    if not var_binds:
+        return
+    first = var_binds[0]
+    if isinstance(first, (list, tuple)):
+        for row in var_binds:
+            for item in row:
+                yield item
+    else:
+        for item in var_binds:
+            yield item
+
+
+def _var_bind_value(vb: Any) -> Any:
+    """Return the value half of an ObjectType (namedtuple-like).
+
+    pysnmp's ObjectType namedtuple supports indexing: ``vb[0]`` is the OID,
+    ``vb[1]`` is the value.
+    """
+    try:
+        return vb[1]
+    except (IndexError, TypeError):
+        return None
+
+
+def _decode_var_bind(vb: Any) -> tuple[str | None, Any]:
+    """Decode an ObjectType into ``(oid_string, decoded_value)``."""
+    try:
+        oid_str = str(vb[0])
+    except (IndexError, TypeError):
+        return None, None
+    try:
+        return oid_str, decode_value(vb[1])
+    except (IndexError, TypeError):
+        return oid_str, None
 
 
 # Backward-compatible private alias (used internally below).
