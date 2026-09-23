@@ -60,9 +60,10 @@ class HikvisionDataUpdateCoordinator(DataUpdateCoordinator):
         ch_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.2"
         disk_root = f"{HIKVISION_PRIVATE_MIB_ROOT}.3"
 
-        # Pass known leaf indices so walk() can patch missing values with single GETs.
+        # Pass known leaf indices (the values of SYSTEM_OIDS, not the metric names)
+# so walk() can patch missing values with single GETs.
         sys_raw = await self._client.walk(
-            sys_root, max_repetitions=BULK_MAX_REPETITIONS, known_leaves=list(SYSTEM_OIDS.keys())
+            sys_root, max_repetitions=BULK_MAX_REPETITIONS, known_leaves=list(SYSTEM_OIDS.values())
         )
 
         # Channel / disk walks are best-effort — many devices (notably
