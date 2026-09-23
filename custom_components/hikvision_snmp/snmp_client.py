@@ -245,7 +245,14 @@ class HikvisionSnmpClient:
                 "_walk_next iter=%d returned oid=%r value=%r root=%r starts_with=%s",
                 iteration, oid_str, value, oid_root, oid_str.startswith(oid_root),
             )
+            # EndOfMibView can be returned as a value rather than as error_indication
+            # on some firmware. Detect it and break to avoid infinite loops.
+            if isinstance(value, str) and "No more variables" in value:
+                break
             if not oid_str.startswith(oid_root):
+                break
+            # Guard against pysnmp returning the same OID twice in a row
+            if results and results[-1][0] == oid_str:
                 break
             results.append((oid_str, value))
             current = ObjectIdentity(oid_str)
