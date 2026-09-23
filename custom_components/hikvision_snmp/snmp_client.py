@@ -167,6 +167,7 @@ class HikvisionSnmpClient:
         """GETNEXT walk — one OID per request. Universal fallback."""
         results: list[tuple[str, Any]] = []
         current = ObjectIdentity(oid_root)
+        iteration = 0
         while True:
             try:
                 error_indication, error_status, _, var_binds = await nextCmd(
@@ -178,7 +179,16 @@ class HikvisionSnmpClient:
                     lexicographicMode=False,
                 )
             except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("_walk_next iter=%d exception: %s", iteration, exc)
                 raise HikvisionSnmpError(f"next failed: {exc}") from exc
+            _LOGGER.debug(
+                "_walk_next iter=%d err_ind=%r err_stat=%r n_binds=%d current=%s",
+                iteration, error_indication, error_status, len(var_binds) if var_binds else 0, current,
+            )
+            iteration += 1
+            if iteration > 100:
+                _LOGGER.debug("_walk_next iteration cap reached")
+                break
             if error_indication:
                 # End-of-mib — pysnmp surfaces this as 'no more variables' errorIndication
                 break
