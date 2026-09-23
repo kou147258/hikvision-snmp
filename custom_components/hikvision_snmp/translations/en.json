@@ -1,0 +1,53 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "basic": {
+        "title": "Device basics",
+        "description": "Enter the connection details for your Hikvision device.",
+        "data": {
+          "name": "Name",
+          "host": "Host",
+          "port": "Port",
+          "device_type": "Device type"
+        }
+      },
+      "snmp": {
+        "title": "SNMP credentials",
+        "description": "Select the SNMP version and enter credentials.",
+        "data": {
+          "version": "SNMP version",
+          "community": "Community (v2c)",
+          "username": "Username (v3)",
+          "auth_protocol": "Auth protocol (v3)",
+          "auth_key": "Auth key (v3)",
+          "privacy_protocol": "Privacy protocol (v3)",
+          "privacy_key": "Privacy key (v3)"
+        }
+      },
+      "confirm": {
+        "title": "Confirm",
+        "description": "Testing connection to {host}…"
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect via SNMP. Check host, port, and credentials.",
+      "no_data": "Connected but device returned no system description.",
+      "invalid_snmp_version": "Credentials do not match the selected SNMP version."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "flow_title": "{name} options",
+    "step": {
+      "options_general": {
+        "title": "Polling options",
+        "data": {
+          "scan_interval": "Poll interval (seconds)"
+        }
+      }
+    }
+  }
+}
