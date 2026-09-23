@@ -14,6 +14,8 @@ which set of scalar sensors to expose:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +45,8 @@ from .const import (
 from .coordinator import HikvisionDataUpdateCoordinator
 from .helpers import decode_octet_string, parse_int, parse_value_with_unit
 
+_LOGGER = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class HikvisionSensorDescription(SensorEntityDescription):
@@ -65,72 +69,72 @@ def _scalar(metric_key: str):
 IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     HikvisionSensorDescription(
         key="model",
-        name="Model",
+        translation_key="model",
         icon="mdi:information-outline",
         value_fn=lambda d: decode_octet_string(_scalar("model")(d)),
     ),
     HikvisionSensorDescription(
         key="device_name",
-        name="Device Name",
+        translation_key="device_name",
         icon="mdi:tag-outline",
         value_fn=lambda d: decode_octet_string(_scalar("device_name")(d)),
     ),
     HikvisionSensorDescription(
         key="firmware",
-        name="Firmware Version",
+        translation_key="firmware",
         icon="mdi:chip",
         value_fn=lambda d: decode_octet_string(_scalar("firmware")(d)),
     ),
     HikvisionSensorDescription(
         key="mac",
-        name="MAC Address",
+        translation_key="mac",
         icon="mdi:network",
         value_fn=lambda d: decode_octet_string(_scalar("mac")(d)),
     ),
     HikvisionSensorDescription(
         key="manufacturer",
-        name="Manufacturer",
+        translation_key="manufacturer",
         icon="mdi:factory",
         value_fn=lambda d: decode_octet_string(_scalar("manufacturer")(d)),
     ),
     HikvisionSensorDescription(
         key="cpu",
-        name="CPU Usage",
+        translation_key="cpu",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: parse_value_with_unit(_scalar("cpu")(d))[0],
     ),
     HikvisionSensorDescription(
         key="memory_used_pct",
-        name="Memory Usage",
+        translation_key="memory_used_pct",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: parse_value_with_unit(_scalar("memory_used_pct")(d))[0],
     ),
     HikvisionSensorDescription(
         key="memory_total",
-        name="Memory Total",
+        translation_key="memory_total",
         native_unit_of_measurement=UnitOfInformation.MEGABYTES,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: parse_value_with_unit(_scalar("memory_total")(d))[0],
     ),
     HikvisionSensorDescription(
         key="storage_total",
-        name="Storage Total",
+        translation_key="storage_total",
         native_unit_of_measurement=UnitOfInformation.GIGABYTES,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: parse_value_with_unit(_scalar("storage_total")(d))[0],
     ),
     HikvisionSensorDescription(
         key="storage_used_pct",
-        name="Storage Used",
+        translation_key="storage_used_pct",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: parse_value_with_unit(_scalar("storage_used_pct")(d))[0],
     ),
     HikvisionSensorDescription(
         key="uptime_seconds",
-        name="Uptime",
+        translation_key="uptime_seconds",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -138,13 +142,13 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="device_time",
-        name="Device Time",
+        translation_key="device_time",
         icon="mdi:clock-outline",
         value_fn=lambda d: decode_octet_string(_scalar("device_time")(d)),
     ),
     HikvisionSensorDescription(
         key="network_type",
-        name="Network Type",
+        translation_key="network_type",
         icon="mdi:lan",
         value_fn=lambda d: decode_octet_string(_scalar("network_type")(d)),
     ),
@@ -156,25 +160,25 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
 NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     HikvisionSensorDescription(
         key="serial",
-        name="Serial Number",
+        translation_key="serial",
         icon="mdi:barcode",
         value_fn=lambda d: decode_octet_string(_scalar("serial")(d)),
     ),
     HikvisionSensorDescription(
         key="ip_addr",
-        name="IP Address",
+        translation_key="ip_addr",
         icon="mdi:ip",
         value_fn=lambda d: str(_scalar("ip_addr")(d)) if _scalar("ip_addr")(d) else None,
     ),
     HikvisionSensorDescription(
         key="trap_target",
-        name="Trap Target",
+        translation_key="trap_target",
         icon="mdi:lan-connect",
         value_fn=lambda d: decode_octet_string(_scalar("trap_target")(d)),
     ),
     HikvisionSensorDescription(
         key="cpu_freq",
-        name="CPU Frequency",
+        translation_key="cpu_freq",
         # HA 2024 deprecated `UnitOfInformation.MEGAHERTZ` (megahertz is a
         # frequency, not an information/data unit). HA 2025.1 removed the
         # deprecated alias entirely. Use the proper ``UnitOfFrequency`` enum
@@ -185,7 +189,7 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="temperature_or_load",
-        name="Temperature / Load",
+        translation_key="temperature_or_load",
         # The .220.0 leaf is device-specific — could be temperature (×10)
         # or a load counter. Show raw value; user can rename / re-unit.
         state_class=SensorStateClass.MEASUREMENT,
@@ -194,28 +198,28 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="traffic_or_iops",
-        name="Traffic / IOPS",
+        translation_key="traffic_or_iops",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:swap-vertical",
         value_fn=lambda d: parse_int(_scalar("traffic_or_iops")(d)),
     ),
     HikvisionSensorDescription(
         key="channels_total",
-        name="Channels Total",
+        translation_key="channels_total",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:counter",
         value_fn=lambda d: parse_int(_scalar("channel_count")(d)),
     ),
     HikvisionSensorDescription(
         key="active_state",
-        name="Active State",
+        translation_key="active_state",
         # .230.0 — INTEGER 1 typically means "any channel active/recording".
         icon="mdi:record-rec",
         value_fn=lambda d: parse_int(_scalar("active_state")(d)),
     ),
     HikvisionSensorDescription(
         key="online_state",
-        name="Online State",
+        translation_key="online_state",
         # .231.0 — INTEGER count of online channels on the NVR.
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:lan-pending",
@@ -232,7 +236,30 @@ async def async_setup_entry(
     """Set up sensors from a config entry."""
     coordinator: HikvisionDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    await coordinator.async_config_entry_first_refresh()
+    # v0.1.16 — guard the first-refresh wait. Hikvision V5.x firmware can
+    # take 8-15 s for the first poll (system walk + channel walk + disk
+    # walk, each potentially 1-2 s × N channels), and HA's entry-setup
+    # timeout was being hit on ipc / NVR devices in production, surfacing
+    # as ``asyncio.exceptions.CancelledError`` propagated up from
+    # ``entity_platform._async_setup_platform``. Bounding the wait at
+    # 15 s lets entities register with stale-but-non-blocking state
+    # (they'll be unavailable until the coordinator recovers on its
+    # next 10 s poll), instead of the whole entry being cancelled.
+    try:
+        await asyncio.wait_for(
+            coordinator.async_config_entry_first_refresh(),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        _LOGGER.warning(
+            "Initial poll did not complete within 15 s for %s; "
+            "sensors will become available once the coordinator recovers",
+            coordinator.client.host,
+        )
+    except Exception:  # noqa: BLE001
+        # UpdateFailed, ConfigEntryNotReady, etc. — let HA handle.
+        raise
+
     data = coordinator.data or {}
 
     entities: list[SensorEntity] = []
@@ -252,31 +279,45 @@ async def async_setup_entry(
     # depending on decode_walk_results trailing-component handling).
     for ch_idx in sorted(channel_keys, key=lambda x: int(x.split(".")[0])):
         if coordinator.vendor == VENDOR_HIKVISION_NVR:
-            entities.append(HikvisionNvrChannelSensor(coordinator, entry, ch_idx, "label", "Channel Label"))
+            entities.append(HikvisionNvrChannelSensor(
+                coordinator, entry, ch_idx, "label", "Channel Label",
+                translation_key="nvr_channel_label",
+            ))
             entities.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "motion_flag", "Motion",
+                translation_key="nvr_channel_motion",
             ))
             entities.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "sub_stream_size", "Sub-stream Size",
+                translation_key="nvr_channel_sub_stream_size",
                 unit=UnitOfInformation.KILOBITS_PER_SECOND,
             ))
             entities.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "bytes_used", "Bytes Used",
+                translation_key="nvr_channel_bytes_used",
                 unit=UnitOfInformation.BYTES,
             ))
         else:
-            entities.append(HikvisionChannelSensor(coordinator, entry, ch_idx, "name", "Channel Name"))
+            entities.append(HikvisionChannelSensor(
+                coordinator, entry, ch_idx, "name", "Channel Name",
+                translation_key="ipc_channel_name",
+            ))
             entities.append(HikvisionChannelSensor(
                 coordinator, entry, ch_idx, "bitrate", "Channel Bitrate",
+                translation_key="ipc_channel_bitrate",
                 unit=UnitOfInformation.KILOBITS_PER_SECOND,
             ))
 
     # Per-disk sensors (IPC SD card or NVR HDD via .3 table — IPC only)
     disk_keys = data.get("disks", {}).get("name", {}).keys()
     for disk_idx in sorted(disk_keys, key=lambda x: int(x.split(".")[0])):
-        entities.append(HikvisionDiskSensor(coordinator, entry, disk_idx, "name", "Disk Name"))
+        entities.append(HikvisionDiskSensor(
+            coordinator, entry, disk_idx, "name", "Disk Name",
+            translation_key="disk_name",
+        ))
         entities.append(HikvisionDiskSensor(
             coordinator, entry, disk_idx, "capacity", "Disk Capacity",
+            translation_key="disk_capacity",
             unit=UnitOfInformation.GIGABYTES,
         ))
 
@@ -324,10 +365,17 @@ class _DynamicTableSensor(
         metric_key: str,
         name_suffix: str,
         unit: str | None = None,
+        translation_key: str | None = None,
     ) -> None:
         super().__init__(coordinator)
         self._idx = idx
         self._metric_key = metric_key
+        # Prefer translation_key (HA picks the user's-locale translation
+        # from translations/<lang>.json when available, otherwise falls
+        # back to the hardcoded ``name_suffix``). This lets en/zh users
+        # both see the right name without us hardcoding two parallel
+        # ``HikvisionSensorDescription`` variants.
+        self._attr_translation_key = translation_key
         self._attr_name = name_suffix
         self._attr_native_unit_of_measurement = unit
         self._attr_unique_id = f"{entry.entry_id}_{self._table_name}_{idx}_{metric_key}"

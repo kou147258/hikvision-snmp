@@ -14,6 +14,9 @@ Two product lines are supported:
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -26,6 +29,8 @@ from .const import DOMAIN, VENDOR_HIKVISION_NVR
 from .coordinator import HikvisionDataUpdateCoordinator
 from .helpers import parse_int
 
+_LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -33,7 +38,25 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: HikvisionDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    await coordinator.async_config_entry_first_refresh()
+
+    # v0.1.16 — same 15 s wait_for guard as sensor.py. See that file's
+    # comment for the full rationale; the binary_sensor platform's first
+    # refresh was hitting HA's entry-setup timeout on slow V5.x NVRs
+    # with many channels.
+    try:
+        await asyncio.wait_for(
+            coordinator.async_config_entry_first_refresh(),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        _LOGGER.warning(
+            "Initial poll did not complete within 15 s for %s; "
+            "binary sensors will become available once the coordinator recovers",
+            coordinator.client.host,
+        )
+    except Exception:  # noqa: BLE001
+        raise
+
     async_add_entities([
         HikvisionOnlineBinarySensor(coordinator, entry),
         HikvisionRecordingBinarySensor(coordinator, entry),
@@ -61,7 +84,7 @@ class HikvisionOnlineBinarySensor(_Base):
         3. ``coordinator.last_update_success`` as a final fallback.
     """
 
-    _attr_name = "Online"
+    _attr_translation_key = "online"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
     def __init__(
@@ -102,7 +125,7 @@ class HikvisionRecordingBinarySensor(_Base):
            level indicator available in the 50001 MIB).
     """
 
-    _attr_name = "Recording"
+    _attr_translation_key = "recording"
 
     def __init__(
         self, coordinator: HikvisionDataUpdateCoordinator, entry

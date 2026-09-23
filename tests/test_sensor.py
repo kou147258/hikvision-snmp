@@ -1,0 +1,301 @@
+"""Tests for the sensor and binary_sensor platforms — translation_key + setup guards.
+
+Covers:
+
+- **v0.1.16** — ``_attr_translation_key`` is set on every entity so HA can
+  pick the user's-locale translation from ``translations/<lang>.json``.
+  Both the static ``HikvisionSensorDescription`` IPC/NVR sensors and the
+  dynamic ``_DynamicTableSensor`` (per-channel / per-disk) carry a
+  translation_key; English ``name=`` is kept as a fallback for users
+  without a translation file in their locale.
+- **v0.1.16** — ``async_setup_entry`` wraps the coordinator's
+  ``async_config_entry_first_refresh`` in ``asyncio.wait_for(..., 15)``
+  so a slow Hikvision V5.x firmware can't make HA cancel the entry
+  setup with ``asyncio.exceptions.CancelledError`` (which is what was
+  happening on the user's HAOS 2026.x with NVR + ipc devices).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from custom_components.hikvision_snmp.binary_sensor import (
+    HikvisionOnlineBinarySensor,
+    HikvisionRecordingBinarySensor,
+)
+from custom_components.hikvision_snmp.const import DOMAIN
+from custom_components.hikvision_snmp.sensor import (
+    IPC_SENSORS,
+    NVR_SENSORS,
+    HikvisionSensor,
+    HikvisionSensorDescription,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EN_TRANSLATIONS = json.loads(
+    (REPO_ROOT / "custom_components/hikvision_snmp/translations/en.json").read_text(
+        encoding="utf-8"
+    )
+)
+ZH_TRANSLATIONS = json.loads(
+    (REPO_ROOT / "custom_components/hikvision_snmp/translations/zh.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+# ---- v0.1.16 — translation_key coverage ----
+
+
+def _all_translation_keys() -> set[str]:
+    """Collect every translation key the platforms could request."""
+    keys: set[str] = set()
+    for desc in IPC_SENSORS:
+        keys.add(desc.translation_key)
+    for desc in NVR_SENSORS:
+        keys.add(desc.translation_key)
+    # Dynamic-table sensors use fixed translation_keys set in async_setup_entry.
+    keys.update({
+        "nvr_channel_label", "nvr_channel_motion",
+        "nvr_channel_sub_stream_size", "nvr_channel_bytes_used",
+        "ipc_channel_name", "ipc_channel_bitrate",
+        "disk_name", "disk_capacity",
+        "online", "recording",  # binary_sensor
+    })
+    return keys
+
+
+def test_all_static_sensor_translations_have_key():
+    """Every IPC_SENSORS / NVR_SENSORS entry has a translation_key set.
+
+    Without this, HA would either fall back to the hardcoded ``name=``
+    (visible as English even in zh-locale HA installs) or to the
+    translation_key itself (visible as "model" or "cpu_freq" instead of
+    a human-readable label). The regression guard is here so a future
+    refactor that adds a sensor forgets translation_key isn't shipped.
+    """
+    for desc in IPC_SENSORS:
+        assert desc.translation_key, f"IPC sensor {desc.key!r} has no translation_key"
+        assert desc.translation_key == desc.key, (
+            f"IPC sensor {desc.key!r} translation_key should match key "
+            f"for stability; got {desc.translation_key!r}"
+        )
+    for desc in NVR_SENSORS:
+        assert desc.translation_key, f"NVR sensor {desc.key!r} has no translation_key"
+        assert desc.translation_key == desc.key, (
+            f"NVR sensor {desc.key!r} translation_key should match key "
+            f"for stability; got {desc.translation_key!r}"
+        )
+
+
+def test_translation_keys_covered_in_en_json():
+    """Every translation_key referenced by the platform is present in en.json.
+
+    If a new translation_key is added without an en.json entry, English
+    users see the bare translation_key as the entity name (e.g.
+    "ipc_channel_bitrate" instead of "Channel Bitrate"). This test
+    catches that.
+    """
+    en_sensor = EN_TRANSLATIONS.get("entity", {}).get("sensor", {})
+    en_binary = EN_TRANSLATIONS.get("entity", {}).get("binary_sensor", {})
+    for key in _all_translation_keys():
+        if key in ("online", "recording"):
+            assert key in en_binary, f"binary_sensor.{key} missing from en.json"
+        else:
+            assert key in en_sensor, f"sensor.{key} missing from en.json"
+
+
+def test_translation_keys_covered_in_zh_json():
+    """Every translation_key is present in zh.json so zh-locale users see Chinese."""
+    zh_sensor = ZH_TRANSLATIONS.get("entity", {}).get("sensor", {})
+    zh_binary = ZH_TRANSLATIONS.get("entity", {}).get("binary_sensor", {})
+    for key in _all_translation_keys():
+        if key in ("online", "recording"):
+            assert key in zh_binary, f"binary_sensor.{key} missing from zh.json"
+        else:
+            assert key in zh_sensor, f"sensor.{key} missing from zh.json"
+
+
+def test_zh_translations_are_actually_chinese():
+    """zh.json sensor names are not the same as en.json (i.e. actually translated).
+
+    A bug that copied the en.json structure into zh.json would pass the
+    "key exists" tests above but produce English entity names in a
+    zh-locale install. This test catches that class of copy-paste bug.
+    """
+    zh_sensor = ZH_TRANSLATIONS["entity"]["sensor"]
+    en_sensor = EN_TRANSLATIONS["entity"]["sensor"]
+    for key in zh_sensor:
+        zh_name = zh_sensor[key]["name"]
+        en_name = en_sensor[key]["name"]
+        assert zh_name != en_name, (
+            f"zh.json sensor.{key} name is identical to en.json "
+            f"({zh_name!r}) — translation copy-paste bug"
+        )
+
+
+def test_binary_sensors_carry_translation_key():
+    """Both HikvisionOnline and HikvisionRecording set ``_attr_translation_key``.
+
+    They also have ``_attr_has_entity_name = True`` (inherited from
+    ``_Base``), so the displayed name is ``<device name> <translation>``
+    in the user's locale.
+    """
+    # We can check the class-level defaults without instantiating —
+    # since both classes inherit from _Base which sets
+    # ``_attr_has_entity_name = True``.
+    assert HikvisionOnlineBinarySensor._attr_translation_key == "online"
+    assert HikvisionRecordingBinarySensor._attr_translation_key == "recording"
+
+
+# ---- v0.1.16 — entry setup wait_for guard ----
+
+
+class _FakeCoordinator:
+    """Stand-in for HikvisionDataUpdateCoordinator with a configurable first-refresh delay."""
+
+    def __init__(self, host: str = "10.0.0.1", vendor: str = "hikvision_ipc"):
+        self._host = host
+        self.vendor = vendor
+        self.last_update_success = True
+        self.data: dict | None = None
+        self.refresh_called = 0
+        self.device_info = None  # HikvisionSensor reads coordinator.device_info
+        # Set this to delay async_config_entry_first_refresh (simulating
+        # a slow Hikvision V5.x NVR with many channels).
+        self._delay_seconds = 0
+
+    @property
+    def client(self):
+        class _C:
+            host = self._host
+        return _C()
+
+    async def async_config_entry_first_refresh(self):
+        self.refresh_called += 1
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        self.data = {"identification": {}, "channels": {}, "disks": {}}
+        return self.data
+
+
+class _FakeEntry:
+    entry_id = "test_entry"
+
+
+class _FakeHass:
+    def __init__(self):
+        self.data = {DOMAIN: {_FakeEntry.entry_id: _FakeCoordinator()}}
+
+
+def _patch_sensor_module_for_setup(coordinator):
+    """Wire a FakeHass + FakeEntry so async_setup_entry can resolve the coordinator."""
+    hass = _FakeHass()
+    hass.data[DOMAIN][_FakeEntry.entry_id] = coordinator
+    entry = _FakeEntry()
+
+    # We don't care about the entities created in the test — only that
+    # ``async_setup_entry`` doesn't blow up before reaching the entity
+    # registration step. Use a sync stub to avoid "coroutine never
+    # awaited" warnings from the test's own helpers.
+    def fake_add_entities(entities):
+        pass
+
+    return hass, entry, fake_add_entities
+
+
+@pytest.mark.asyncio
+async def test_sensor_setup_completes_when_first_refresh_is_fast():
+    """``async_setup_entry`` returns normally when the first refresh is < 15s."""
+    from custom_components.hikvision_snmp.sensor import async_setup_entry
+
+    coordinator = _FakeCoordinator()
+    hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
+
+    await async_setup_entry(hass, entry, add_entities)
+    assert coordinator.refresh_called == 1
+
+
+@pytest.mark.asyncio
+async def test_sensor_setup_does_not_cancellederror_when_first_refresh_times_out():
+    """``async_setup_entry`` no longer raises CancelledError when first refresh is slow.
+
+    Pre-v0.1.16: HA's entry-setup timeout fired while the coordinator's
+    first refresh was in progress, propagating ``CancelledError`` up
+    through ``entity_platform._async_setup_platform`` to
+    ``config_entries.async_setup_entry``, where HA surfaced it as
+    ``Setup of config entry 'ipc' for hikvision_snmp integration
+    cancelled``.
+
+    v0.1.16 wraps the first refresh in
+    ``asyncio.wait_for(coordinator.async_config_entry_first_refresh(), timeout=15)``
+    so the worst case is a TimeoutError logged as a warning, then entity
+    registration continues. HA sees a successful setup. Entities will
+    be unavailable until the coordinator's next 10 s poll succeeds.
+
+    Simulated here by setting the coordinator's delay to 0.1 s and
+    wrapping wait_for with a tighter 0.05 s timeout — the wrapper is
+    set in the sensor module via monkeypatch so we test the actual
+    wait_for invocation rather than the production 15 s wall time.
+    """
+    import custom_components.hikvision_snmp.sensor as sensor_mod
+
+    coordinator = _FakeCoordinator()
+    coordinator._delay_seconds = 0.1  # way over the patched 0.05s wait_for
+    hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
+
+    real_wait_for = asyncio.wait_for
+
+    async def tight_wait_for(awaitable, timeout):
+        return await real_wait_for(awaitable, timeout=0.05)
+
+    with patch.object(sensor_mod.asyncio, "wait_for", tight_wait_for):
+        # Must NOT raise CancelledError.
+        await sensor_mod.async_setup_entry(hass, entry, add_entities)
+
+    assert coordinator.refresh_called == 1
+
+
+@pytest.mark.asyncio
+async def test_binary_sensor_setup_does_not_cancellederror_when_first_refresh_times_out():
+    """Same setup-guard test for the binary_sensor platform."""
+    import custom_components.hikvision_snmp.binary_sensor as binary_mod
+
+    coordinator = _FakeCoordinator()
+    coordinator._delay_seconds = 0.1
+    hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
+
+    real_wait_for = asyncio.wait_for
+
+    async def tight_wait_for(awaitable, timeout):
+        return await real_wait_for(awaitable, timeout=0.05)
+
+    with patch.object(binary_mod.asyncio, "wait_for", tight_wait_for):
+        # Must NOT raise CancelledError.
+        await binary_mod.async_setup_entry(hass, entry, add_entities)
+
+    assert coordinator.refresh_called == 1
+
+
+# ---- v0.1.16 — translations files are valid JSON ----
+
+
+def test_translations_json_files_are_well_formed():
+    """Both en.json and zh.json parse cleanly and contain the expected top-level keys.
+
+    Guards against an accidental trailing comma or missing brace making
+    HA silently fall back to showing the integration's hardcoded
+    ``name=`` English strings.
+    """
+    for lang, data in (("en", EN_TRANSLATIONS), ("zh", ZH_TRANSLATIONS)):
+        assert "config" in data, f"{lang}.json missing 'config' section"
+        assert "options" in data, f"{lang}.json missing 'options' section"
+        assert "entity" in data, f"{lang}.json missing 'entity' section"
+        assert "sensor" in data["entity"], f"{lang}.json entity.sensor missing"
+        assert "binary_sensor" in data["entity"], f"{lang}.json entity.binary_sensor missing"

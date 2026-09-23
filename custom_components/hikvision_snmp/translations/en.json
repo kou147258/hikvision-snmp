@@ -33,7 +33,7 @@
     "error": {
       "cannot_connect": "Failed to connect via SNMP. Check host, port, and credentials.",
       "no_data": "Connected but device returned no system description.",
-      "invalid_snmp_version": "Credentials do not match the selected SNMP version."
+      "invalid_snmp_version": "Credentials do not match the selected version."
     },
     "abort": {
       "already_configured": "This device is already configured."
@@ -48,6 +48,44 @@
           "scan_interval": "Poll interval (seconds)"
         }
       }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "model": {"name": "Model"},
+      "device_name": {"name": "Device Name"},
+      "firmware": {"name": "Firmware Version"},
+      "mac": {"name": "MAC Address"},
+      "manufacturer": {"name": "Manufacturer"},
+      "cpu": {"name": "CPU Usage"},
+      "memory_used_pct": {"name": "Memory Usage"},
+      "memory_total": {"name": "Memory Total"},
+      "storage_total": {"name": "Storage Total"},
+      "storage_used_pct": {"name": "Storage Used"},
+      "uptime_seconds": {"name": "Uptime"},
+      "device_time": {"name": "Device Time"},
+      "network_type": {"name": "Network Type"},
+      "serial": {"name": "Serial Number"},
+      "ip_addr": {"name": "IP Address"},
+      "trap_target": {"name": "Trap Target"},
+      "cpu_freq": {"name": "CPU Frequency"},
+      "temperature_or_load": {"name": "Temperature / Load"},
+      "traffic_or_iops": {"name": "Traffic / IOPS"},
+      "channels_total": {"name": "Channels Total"},
+      "active_state": {"name": "Active State"},
+      "online_state": {"name": "Online State"},
+      "nvr_channel_label": {"name": "Channel Label"},
+      "nvr_channel_motion": {"name": "Motion"},
+      "nvr_channel_sub_stream_size": {"name": "Sub-stream Size"},
+      "nvr_channel_bytes_used": {"name": "Bytes Used"},
+      "ipc_channel_name": {"name": "Channel Name"},
+      "ipc_channel_bitrate": {"name": "Channel Bitrate"},
+      "disk_name": {"name": "Disk Name"},
+      "disk_capacity": {"name": "Disk Capacity"}
+    },
+    "binary_sensor": {
+      "online": {"name": "Online"},
+      "recording": {"name": "Recording"}
     }
   }
 }

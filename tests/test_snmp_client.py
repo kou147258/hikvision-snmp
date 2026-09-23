@@ -515,17 +515,39 @@ def test_module_does_not_eagerly_import_camelcase_cmd_names():
 
 
 class _FakeMibBuilder:
-    """Captures every ``importSymbols`` call the warm-up makes."""
+    """Captures every loader call the warm-up makes.
+
+    v0.1.16 — pysnmp 7.x renamed ``importSymbols`` to ``import_symbols``
+    AND changed its behaviour so the single-arg "whole-module" form is a
+    silent no-op (returns an empty tuple, doesn't cache anything). The
+    correct API for whole-module loading in pysnmp 7.x is
+    ``loadModules``. v0.1.15 used ``importSymbols("PYSNMP-SOURCE-MIB")``
+    (single arg) which is why the warm-up looked like it worked locally
+    but on the user's HAOS 2026.x + pysnmp 7.1.29 install the first
+    GET still triggered ``os.listdir`` / ``open`` against the MIB
+    directory.
+
+    The fake exposes both ``loadModules`` (preferred) and
+    ``importSymbols`` (fallback). The warm-up code is
+    ``getattr(mb, "loadModules", None) or mb.importSymbols`` — so if
+    ``loadModules`` is present (pysnmp 6.x and 7.x both ship it), the
+    fake's ``loadModules``-tracking list will record the calls; if not,
+    ``importSymbols``-tracking will.
+    """
 
     def __init__(self):
+        self.loaded: list[str] = []
         self.imported: list[tuple] = []
 
+    def loadModules(self, *modules):
+        # The real pysnmp 7.x ``loadModules`` accepts variadic module
+        # names; we treat each name as a "loaded module" record.
+        for m in modules:
+            self.loaded.append(m)
+        return ()  # pysnmp 7.x returns an empty tuple from loadModules
+
     def importSymbols(self, *names):
-        # Accept either the legacy (module,) form or the
-        # (module, symbol1, symbol2, ...) form.
         self.imported.append(names)
-        # Pretend each module "exists" with one fake symbol so the
-        # warm-up loop doesn't bail out on missing-module errors.
         module = names[0]
         return {f"{module}::fakeSymbol": type("Sym", (), {"name": (module, "fakeSymbol")})()}
 
@@ -611,33 +633,86 @@ def test_get_mib_builder_returns_none_when_layout_unrecognised():
     assert client_mod._get_mib_builder(EmptyEngine()) is None
 
 
-def test_warm_mib_cache_calls_importSymbols_for_each_module():
-    """``_warm_mib_cache`` invokes ``MibBuilder.importSymbols`` for each MIB module.
+def test_warm_mib_cache_uses_loadModules_when_available():
+    """``_warm_mib_cache`` prefers ``MibBuilder.loadModules`` over ``importSymbols``.
 
-    The exact module list is documented in the warm-up docstring — these
-    cover both the OIDs the integration queries (``SNMPv2-MIB``,
-    ``IF-MIB``, ``RFC1213-MIB``) and the protocol-internal MIBs pysnmp
-    needs to fill in source-address / source-textual-convention fields on
-    every request (``PYSNMP-SOURCE-MIB``, ``PYSNMP-MIB``, ``SNMPv2-TM``,
-    ``SNMP-TARGET-MIB``, ``TRANSPORT-ADDRESS-MIB``).
+    pysnmp 7.x's ``importSymbols`` is a silent no-op for the
+    single-argument "whole-module" form (returns an empty tuple, doesn't
+    cache anything in ``mibSymbols``). The correct pysnmp 7.x API for
+    whole-module loading is ``loadModules``. The warm-up uses
+    ``getattr(mb, "loadModules", None) or mb.importSymbols`` so that:
+
+    - pysnmp 7.x: ``loadModules`` exists → uses it (caches the module).
+    - pysnmp 6.x: ``loadModules`` also exists → uses it (caches).
+    - Future pysnmp 8.x where ``loadModules`` is renamed: falls back to
+      ``importSymbols`` rather than crashing.
     """
     import custom_components.hikvision_snmp.snmp_client as client_mod
 
     engine = _FakeEngineV6()
     client_mod._warm_mib_cache(engine)
     builder = engine.msgAndPduDsp.mibInstrumController.mibBuilder
+    # loadModules was called for every MIB module — and importSymbols
+    # was NOT called (because loadModules is preferred).
+    expected = {
+        "SNMPv2-MIB", "IF-MIB", "RFC1213-MIB",
+        "PYSNMP-SOURCE-MIB", "PYSNMP-MIB", "SNMPv2-TM",
+        "SNMP-TARGET-MIB", "TRANSPORT-ADDRESS-MIB",
+    }
+    assert set(builder.loaded) == expected
+    assert builder.imported == [], (
+        f"importSymbols should not be called when loadModules is "
+        f"available; got {builder.imported}"
+    )
+
+
+def test_warm_mib_cache_falls_back_to_importSymbols_when_loadModules_missing():
+    """When ``loadModules`` is missing, the warm-up uses ``importSymbols``.
+
+    Defensive fallback for any future pysnmp 8.x that removes
+    ``loadModules``. The fake's ``importSymbols``-tracking path records
+    every module name. Same module list as the happy-path test.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class _MibBuilderNoLoadModules:
+        """MibBuilder with importSymbols but no loadModules — mimics a
+        hypothetical future pysnmp that removes the variadic loader."""
+        def __init__(self):
+            self.imported: list[tuple] = []
+
+        def importSymbols(self, *names):
+            self.imported.append(names)
+            module = names[0]
+            return {f"{module}::fakeSymbol": type("Sym", (), {"name": (module, "fakeSymbol")})()}
+
+    class _FakeMibInstrumControllerV6NoLoad:
+        def __init__(self):
+            self.mibBuilder = _MibBuilderNoLoadModules()
+
+    class _FakeMessageDispatcherV6NoLoad:
+        def __init__(self):
+            self.mibInstrumController = _FakeMibInstrumControllerV6NoLoad()
+
+    class _FakeEngineV6NoLoad:
+        def __init__(self):
+            self.msgAndPduDsp = _FakeMessageDispatcherV6NoLoad()
+
+    engine = _FakeEngineV6NoLoad()
+    client_mod._warm_mib_cache(engine)
+    builder = engine.msgAndPduDsp.mibInstrumController.mibBuilder
+    # importSymbols was called for every MIB module — loadModules was not.
     imported_modules = {names[0] for names in builder.imported}
-    # The integration queries these directly via sysDescr / sysUpTime /
-    # ifInOctets / ifOutOctets.
-    assert "SNMPv2-MIB" in imported_modules
-    assert "IF-MIB" in imported_modules
-    assert "RFC1213-MIB" in imported_modules
-    # pysnmp itself needs these for every request PDU.
-    assert "PYSNMP-SOURCE-MIB" in imported_modules
-    assert "PYSNMP-MIB" in imported_modules
-    assert "SNMPv2-TM" in imported_modules
-    assert "SNMP-TARGET-MIB" in imported_modules
-    assert "TRANSPORT-ADDRESS-MIB" in imported_modules
+    expected = {
+        "SNMPv2-MIB", "IF-MIB", "RFC1213-MIB",
+        "PYSNMP-SOURCE-MIB", "PYSNMP-MIB", "SNMPv2-TM",
+        "SNMP-TARGET-MIB", "TRANSPORT-ADDRESS-MIB",
+    }
+    assert imported_modules == expected
+    assert not hasattr(builder, "loaded"), (
+        f"loadModules must not be called when it's missing; got "
+        f"{getattr(builder, 'loaded', None)}"
+    )
 
 
 def test_warm_mib_cache_no_ops_when_mib_builder_unavailable():
@@ -684,7 +759,7 @@ def test_get_shared_engine_warms_mib_cache_in_to_thread():
         result = func(*args, **kwargs)
         # Inspect builder state AFTER func ran inside the thread.
         warm_called_inside_to_thread.append(
-            len(result.msgAndPduDsp.mibInstrumController.mibBuilder.imported) > 0
+            len(result.msgAndPduDsp.mibInstrumController.mibBuilder.loaded) > 0
         )
         return result
 
@@ -696,9 +771,11 @@ def test_get_shared_engine_warms_mib_cache_in_to_thread():
     engine = _asyncio.run(driver())
     assert warm_called_inside_to_thread == [True]
     assert isinstance(engine, FakeEngine)
-    # The builder's import list should have one entry per warm-up module.
+    # The builder's loaded list should have one entry per warm-up module
+    # (loadModules records each module name; importSymbols records a
+    # tuple of (module,) or (module, sym1, sym2, ...)).
     builder = engine.msgAndPduDsp.mibInstrumController.mibBuilder
-    assert len(builder.imported) >= 8  # 3 MIB-II + 5 pysnmp internal
+    assert len(builder.loaded) >= 8  # 3 MIB-II + 5 pysnmp internal
 
 
 def test_get_shared_engine_returns_cached_singleton_on_second_call():

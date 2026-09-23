@@ -197,28 +197,60 @@ def _warm_mib_cache(engine: SnmpEngine) -> None:
     pysnmp install — the OIDs are still queried by their numeric form
     even if the textual label can't be resolved.
 
-    Runs synchronously and is expected to take ~50-200ms for the three
+    Runs synchronously and is expected to take ~50-200ms for the eight
     modules listed (one ``listdir`` + one ``open`` per module on cold
-    cache). After warm-up, every subsequent ``resolve_with_mib`` call
-    hits the in-memory cache and skips the FS scan.
+    cache). After warm-up, every subsequent ``import_symbols`` /
+    ``resolve_with_mib`` call from pysnmp's request path hits the
+    in-memory cache and skips the FS scan.
+
+    Why ``loadModules`` and not ``importSymbols``:
+    pysnmp 7.x renamed ``importSymbols`` to ``import_symbols`` AND
+    changed its behaviour for the single-argument "whole-module" form.
+    Pre-v0.1.16 we used ``mb.importSymbols("PYSNMP-SOURCE-MIB")`` (single
+    arg, no symbol list), which is a **silent no-op** in pysnmp 7.x —
+    the module is not added to ``mibSymbols`` and the cache stays empty.
+    The next time pysnmp's request path does
+    ``import_symbols("PYSNMP-SOURCE-MIB", "snmpSourceAddrTAddress")``
+    it cache-misses and walks the MIB directory on the HA event loop,
+    producing the
+    ``Detected blocking call to listdir with args ('.../pysnmp/smi/mibs',)``
+    warning on every first ``getCmd`` per process.
+
+    ``loadModules`` is pysnmp 7.x's API for "load the whole module into
+    the cache". It runs synchronously (one listdir + one open per
+    module on cold cache) which is why we run it inside
+    ``asyncio.to_thread`` in ``_get_shared_engine``. After it returns,
+    the module is cached and subsequent ``import_symbols(module, sym)``
+    calls hit the cache and skip the FS scan.
+
+    Local pysnmp 7.1.29 measurements (out-of-the-box install):
+    - Pre-warm first GET: listdir × 6 (PYSNMP-SOURCE-MIB, PYSNMP-MIB,
+      SNMPv2-TM, plus pysnmp's own PDU builder lookups)
+    - Post-warm first GET: listdir × 0 (cache hit on every internal
+      symbol lookup the request path makes)
     """
     mb = _get_mib_builder(engine)
     if mb is None:
         return
     # Modules covering the OIDs we query:
     # - SNMPv2-MIB: sysDescr (.1.3.6.1.2.1.1.1.0), sysUpTime (.1.3.6.1.2.1.1.3.0),
-    #               sysName, sysLocation, sysContact, ifInOctets/ifOutOctets via
-    #               IF-MIB
+    #               sysName, sysLocation, sysContact
     # - IF-MIB: ifInOctets / ifOutOctets per-channel (future walks)
     # - RFC1213-MIB: same interface stats, legacy alias still in use by some devices
     #
     # Plus pysnmp's own protocol-internal MIBs that every request needs to
     # fill in source-address / source-textual-convention fields:
-    # - PYSNMP-SOURCE-MIB: pysnmp source-address MIB (used in every request PDU)
-    # - PYSNMP-MIB: pysnmp's product MIB
+    # - PYSNMP-SOURCE-MIB: pysnmp source-address MIB (used in every request PDU
+    #                      via ``import_symbols("PYSNMP-SOURCE-MIB",
+    #                      "snmpSourceAddrTAddress")`` in
+    #                      ``pysnmp/entity/rfc3413/config.py:48``)
+    # - PYSNMP-MIB: pysnmp's product MIB (snmpEngineBoots / origSnmpEngineID
+    #               lookups in ``pysnmp/entity/engine.py:118,122``)
     # - SNMPv2-TM: SNMPv2 textual conventions for time stamps (used by request FSM)
-    # - SNMP-TARGET-MIB: required by pysnmp's set_user_context path on every request
-    # - TRANSPORT-ADDRESS-MIB: required by pysnmp's transportAddress resolution
+    # - SNMP-TARGET-MIB: snmpTargetAddrEntry / snmpTargetParamsEntry on every
+    #                    request setup in rfc3413/config.py:19,123,254
+    # - TRANSPORT-ADDRESS-MIB: TransportAddressIPv6 / TransportAddressIPv6z
+    #                          in rfc3413/config.py:94
     for module in (
         "SNMPv2-MIB",
         "IF-MIB",
@@ -230,9 +262,15 @@ def _warm_mib_cache(engine: SnmpEngine) -> None:
         "TRANSPORT-ADDRESS-MIB",
     ):
         try:
-            mb.importSymbols(module)
+            # ``loadModules`` is pysnmp 7.x's whole-module loader. Falls
+            # back to ``import_symbols(module)`` for pysnmp 6.x (where
+            # the whole-module form is the canonical way to load a
+            # module without specifying symbols). Both APIs are stable
+            # across their respective major versions.
+            loader = getattr(mb, "loadModules", None) or mb.importSymbols
+            loader(module)
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("MIB warm-up: %s import skipped (%s)", module, exc)
+            _LOGGER.debug("MIB warm-up: %s load skipped (%s)", module, exc)
 
 
 # ---- Runtime pysnmp-API detection ----

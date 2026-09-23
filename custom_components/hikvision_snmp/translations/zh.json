@@ -49,5 +49,43 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "model": {"name": "型号"},
+      "device_name": {"name": "设备名称"},
+      "firmware": {"name": "固件版本"},
+      "mac": {"name": "MAC 地址"},
+      "manufacturer": {"name": "制造商"},
+      "cpu": {"name": "CPU 使用率"},
+      "memory_used_pct": {"name": "内存使用率"},
+      "memory_total": {"name": "内存总量"},
+      "storage_total": {"name": "存储总量"},
+      "storage_used_pct": {"name": "存储使用率"},
+      "uptime_seconds": {"name": "运行时长"},
+      "device_time": {"name": "设备时间"},
+      "network_type": {"name": "网络类型"},
+      "serial": {"name": "序列号"},
+      "ip_addr": {"name": "IP 地址"},
+      "trap_target": {"name": "Trap 目标"},
+      "cpu_freq": {"name": "CPU 频率"},
+      "temperature_or_load": {"name": "温度 / 负载"},
+      "traffic_or_iops": {"name": "流量 / IOPS"},
+      "channels_total": {"name": "通道总数"},
+      "active_state": {"name": "活动状态"},
+      "online_state": {"name": "在线状态"},
+      "nvr_channel_label": {"name": "通道标签"},
+      "nvr_channel_motion": {"name": "动态检测"},
+      "nvr_channel_sub_stream_size": {"name": "子码流大小"},
+      "nvr_channel_bytes_used": {"name": "已用字节"},
+      "ipc_channel_name": {"name": "通道名称"},
+      "ipc_channel_bitrate": {"name": "通道码率"},
+      "disk_name": {"name": "磁盘名称"},
+      "disk_capacity": {"name": "磁盘容量"}
+    },
+    "binary_sensor": {
+      "online": {"name": "在线状态"},
+      "recording": {"name": "录像状态"}
+    }
   }
 }
