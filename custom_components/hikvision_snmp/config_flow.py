@@ -102,10 +102,24 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
     falls back to NVR MIB (``.50001.1.3.0`` = serial). Returns the resolved
     sysDescr string and the vendor identifier.
 
-    All exceptions are caught and turned into a ``(None, "")`` result so
-    that the config flow surfaces the proper ``cannot_connect`` error
-    instead of HA's generic ``Unknown error occurred`` (which fires when
-    the flow manager catches an unhandled exception).
+    Two non-obvious behaviours to defend against:
+
+    1. **pysnmp first-request init overhead.** The first GET on a freshly
+       constructed ``SnmpEngine`` triggers lazy init of message
+       compilation + transport dispatcher — measurably slower than
+       subsequent GETs (often 100-500 ms extra on a busy HA host). The
+       default 1 s per-request timeout is tight against that, especially
+       for Hikvision V5.x firmware which itself responds in 200-500 ms
+       when idle. v0.1.9 uses an explicit 3 s / 2 retries budget for the
+       connection test to absorb both the init overhead and a slow first
+       device response.
+    2. **Standard MIB-II probe before vendor MIB probe.** Hikvision devices
+       always implement standard MIB-II (.1.3.6.1.2.1.*) but the *vendor
+       MIB* (.1.3.6.1.4.1.39165 / .50001) is gated by a separate "Extended
+       MIB" / "私有 MIB" toggle in the device's SNMP config that many
+       admins leave off. A GET to sysUpTime also acts as a *warm-up*
+       for pysnmp so the subsequent vendor-MIB GET doesn't pay the init
+       cost.
     """
     from .const import (
         HIKVISION_NVR_MIB_ROOT,
@@ -119,7 +133,23 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
         _LOGGER.warning("SNMP client construction failed for %s:%s: %s", host, port, exc)
         return None, ""
 
+    # Replace the client's transport target with one that has a more lenient
+    # timeout for the connection test specifically. The coordinator that
+    # takes over after the entry is created uses its own target.
+    client._target = client._target.__class__(
+        (host, port), timeout=3, retries=2,
+    )
+
     try:
+        # Warm-up: ping a standard MIB-II scalar that every SNMP agent
+        # implements. Ignores the response; its only purpose is to flush
+        # pysnmp lazy-init state so the vendor-MIB GET below runs at
+        # steady-state speed.
+        try:
+            await client.get("1.3.6.1.2.1.1.3.0")  # sysUpTime
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("warm-up GET failed (ignored): %s", exc)
+
         # Try IPC root first
         for ipc_oid in (f"{HIKVISION_IPC_MIB_ROOT}.1.1.0", f"{HIKVISION_IPC_MIB_ROOT}.1.1.1.1.0"):
             try:
