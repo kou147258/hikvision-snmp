@@ -178,7 +178,10 @@ async def main() -> int:
             return 1
 
         # 2) System subtree walk (.1.3.6.1.4.1.39165.1)
-        sys_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.1")
+        sys_raw = await client.walk(
+            f"{HIKVISION_PRIVATE_MIB_ROOT}.1",
+            known_leaves=list(SYSTEM_OIDS.keys()),
+        )
         sys_dec = decode_walk_results(sys_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.1", SYSTEM_OIDS)
         print("[probe] system subtree scalars:")
         for key in SYSTEM_OIDS:
