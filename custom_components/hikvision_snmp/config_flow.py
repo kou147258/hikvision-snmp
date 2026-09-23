@@ -107,7 +107,7 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
         self._basic: dict[str, Any] | None = None
         self._snmp: dict[str, Any] | None = None
 
-    async def async_step_user(
+    async def async_step_basic(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is None:
@@ -116,6 +116,12 @@ class HikvisionSnmpConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         self._basic = user_input
         return await self.async_step_snmp()
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Entry point — delegates to the ``basic`` step."""
+        return await self.async_step_basic(user_input)
 
     async def async_step_snmp(
         self, user_input: dict[str, Any] | None = None
