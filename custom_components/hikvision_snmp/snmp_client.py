@@ -166,7 +166,7 @@ class HikvisionSnmpClient:
                 full_oid = f"{oid_root.rstrip('.')}.{leaf}.0"
                 if full_oid not in walked_oids:
                     try:
-                        val = await self.get(full_oid)
+                        val = await self.get_with_retry(full_oid, retries=1, backoff=0.5)
                         _LOGGER.debug(
                             "fallback GET %s -> %r (type=%s)",
                             full_oid, val, type(val).__name__,
@@ -202,39 +202,53 @@ class HikvisionSnmpClient:
         return results
 
     async def _walk_next(self, oid_root: str) -> list[tuple[str, Any]]:
-        """GETNEXT walk — one OID per request. Universal fallback."""
+        """GETNEXT walk — one OID per request. Universal fallback.
+
+        On Hikvision V5.x IPCs under load, GETNEXT requests can be starved by
+        video streaming. We pause + retry once on RequestTimedOut before giving
+        up on a leaf. This recovers most transient failures on busy devices.
+        """
+        import asyncio as _asyncio
+
         results: list[tuple[str, Any]] = []
         current = ObjectIdentity(oid_root)
         iteration = 0
         while True:
-            try:
-                error_indication, error_status, _, var_binds = await nextCmd(
-                    self._engine,
-                    self._auth_data,
-                    self._target,
-                    ContextData(),
-                    ObjectType(current),
-                    lexicographicMode=False,
-                )
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("_walk_next iter=%d exception: %s", iteration, exc)
-                raise HikvisionSnmpError(f"next failed: {exc}") from exc
-            _LOGGER.debug(
-                "_walk_next iter=%d err_ind=%r err_stat=%r n_binds=%d current=%s",
-                iteration, error_indication, error_status, len(var_binds) if var_binds else 0, current,
-            )
             iteration += 1
             if iteration > 100:
                 _LOGGER.debug("_walk_next iteration cap reached")
                 break
+            var_binds: list = []
+            for attempt in range(2):
+                try:
+                    error_indication, error_status, _, var_binds = await nextCmd(
+                        self._engine,
+                        self._auth_data,
+                        self._target,
+                        ContextData(),
+                        ObjectType(current),
+                        lexicographicMode=False,
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    if attempt == 0:
+                        _LOGGER.debug(
+                            "_walk_next iter=%d attempt %d failed: %s (sleep 0.5s)",
+                            iteration, attempt + 1, exc,
+                        )
+                        await _asyncio.sleep(0.5)
+                        continue
+                    raise HikvisionSnmpError(f"next failed: {exc}") from exc
+            _LOGGER.debug(
+                "_walk_next iter=%d err_ind=%r err_stat=%r n_binds=%d current=%s",
+                iteration, error_indication, error_status, len(var_binds) if var_binds else 0, current,
+            )
             if error_indication:
-                # End-of-mib — pysnmp surfaces this as 'no more variables' errorIndication
                 break
             if error_status:
                 raise HikvisionSnmpError(f"next status: {error_status.prettyPrint()}")
             if not var_binds:
                 break
-            # nextCmd returns 2-D [[ObjectType]]; take the first ObjectType.
             first_object_type = next(iter(_iter_object_types(var_binds)), None)
             if first_object_type is None:
                 break
@@ -245,13 +259,10 @@ class HikvisionSnmpClient:
                 "_walk_next iter=%d returned oid=%r value=%r root=%r starts_with=%s",
                 iteration, oid_str, value, oid_root, oid_str.startswith(oid_root),
             )
-            # EndOfMibView can be returned as a value rather than as error_indication
-            # on some firmware. Detect it and break to avoid infinite loops.
             if isinstance(value, str) and "No more variables" in value:
                 break
             if not oid_str.startswith(oid_root):
                 break
-            # Guard against pysnmp returning the same OID twice in a row
             if results and results[-1][0] == oid_str:
                 break
             results.append((oid_str, value))
