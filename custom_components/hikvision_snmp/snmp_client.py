@@ -113,6 +113,14 @@ class HikvisionSnmpClient:
             return None
         return _decode_value(var_binds[0][1])
 
+    async def get_raw(self, oid: str) -> tuple[Any, Any, Any]:
+        """Diagnostic variant — returns (error_indication, error_status, var_binds).
+
+        Useful for diagnosing auth failures (community mismatch surfaces as
+        non-None error_indication) without raising an exception.
+        """
+        return await self._do_get_raw([ObjectType(ObjectIdentity(oid))])
+
     async def walk(self, oid_root: str, max_repetitions: int = 25) -> list[tuple[str, Any]]:
         """GETBULK walk. Returns ``[(oid_str, value), ...]`` for OIDs under oid_root."""
         results: list[tuple[str, Any]] = []
@@ -142,18 +150,22 @@ class HikvisionSnmpClient:
 
     # ---- internal ----
 
-    async def _do_get(self, var_binds_in) -> list:
+    async def _do_get_raw(self, var_binds_in):
         try:
             error_indication, error_status, _, var_binds = await getCmd(
                 self._engine, self._auth_data, self._target, ContextData(), *var_binds_in
             )
         except Exception as exc:  # noqa: BLE001
             raise HikvisionSnmpError(f"get failed: {exc}") from exc
+        return error_indication, error_status, [tuple(vb) for vb in var_binds]
+
+    async def _do_get(self, var_binds_in) -> list:
+        error_indication, error_status, var_binds = await self._do_get_raw(var_binds_in)
         if error_indication:
             raise HikvisionSnmpError(f"get indication: {error_indication}")
         if error_status:
             raise HikvisionSnmpError(f"get status: {error_status.prettyPrint()}")
-        return [tuple(vb) for vb in var_binds]
+        return var_binds
 
     async def _do_bulk(self, base_oid: ObjectIdentity, max_repetitions: int) -> list:
         try:

@@ -113,33 +113,55 @@ async def main() -> int:
     try:
         # 0) Diagnostic — try standard RFC1213 sysDescr to verify SNMP works at all
         try:
-            std_descr = await client.get("1.3.6.1.2.1.1.1.0")
-            print(f"[probe] RFC1213 sysDescr (standard OID): {decode_octet_string(std_descr)!r}")
+            err_ind, err_stat, std_vbs = await client.get_raw("1.3.6.1.2.1.1.1.0")
+            if err_ind:
+                print(f"[probe] RFC1213 error_indication: {err_ind}")
+            elif err_stat:
+                print(f"[probe] RFC1213 error_status: {err_stat.prettyPrint()}")
+            else:
+                std_val = _decode_value(std_vbs[0][1])
+                print(f"[probe] RFC1213 sysDescr: {decode_octet_string(std_val)!r}")
+                if std_val is None:
+                    print(f"[probe]   (raw value type: {type(std_vbs[0][1]).__name__})")
         except Exception as exc:  # noqa: BLE001
-            print(f"[probe] RFC1213 sysDescr failed: {exc}")
+            print(f"[probe] RFC1213 get failed: {exc}")
 
-        # 1) sysDescr scalar GET on Hikvision private MIB
-        sys_descr = await client.get(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1.1.0")
-        print(f"[probe] Hikvision sysDescr (private OID): {decode_octet_string(sys_descr)!r}")
+        # 1) Hikvision private MIB sysDescr (raw)
+        try:
+            err_ind, err_stat, hik_vbs = await client.get_raw(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.1.1.0")
+            if err_ind:
+                print(f"[probe] Hikvision error_indication: {err_ind}")
+                print(f"[probe]   (this is what pysnmp saw from the network. If it says")
+                print(f"[probe]    'usmStats' / 'authorization' / similar — your community")
+                print(f"[probe]    string or v3 credentials are wrong, or SNMP is disabled.)")
+                return 1
+            elif err_stat:
+                print(f"[probe] Hikvision error_status: {err_stat.prettyPrint()}")
+                return 1
+            hik_val = _decode_value(hik_vbs[0][1])
+            print(f"[probe] Hikvision sysDescr: {decode_octet_string(hik_val)!r}")
+            print(f"[probe]   (raw value type: {type(hik_vbs[0][1]).__name__})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[probe] Hikvision get failed: {exc}")
+            return 1
+
+        sys_descr = hik_val
         if not sys_descr:
             print()
             print("[probe] === DIAGNOSTICS ===")
-            print("[probe] Hikvision private MIB did not respond. Possible causes:")
-            print("[probe] 1. Device is not actually Hikvision (try --community private)")
-            print("[probe]    - Hikvision ships with default community 'private', not 'public'")
-            print("[probe]    - Some firmwares refuse unknown community strings without trap setup")
-            print("[probe] 2. SNMP is disabled in device web UI")
-            print("[probe]    - Configuration → Network → SNMP → Enable SNMP")
-            print("[probe] 3. UDP port 161 is blocked by firewall or ACL on this VLAN")
-            print("[probe] 4. Very old firmware (pre-2018) uses different enterprise OID")
+            print("[probe] Hikvision private MIB did not return a sysDescr string.")
+            print("[probe] If the raw value type above says NoSuchInstance /")
+            print("[probe] NoSuchObject, the device responds to SNMP but either:")
+            print("[probe]   1. community / v3 credentials are wrong (Hikvision returns")
+            print("[probe]      NoSuchInstance for auth-failed GETs to mask the failure)")
+            print("[probe]   2. the device is not Hikvision")
+            print("[probe]   3. private MIB subtree is empty (very old firmware)")
             print()
             print("[probe] Try one of:")
             print(f"[probe]   python tools/snmp_probe.py --host {args.host} --community private")
-            print(f"[probe]   Test-NetConnection {args.host} -Port 161")
-            print("[probe] If the RFC1213 line above is empty too, the device is unreachable")
-            print("[probe] or the credentials are wrong. If RFC1213 returned a string but")
-            print("[probe] Hikvision did not, the device is on the network but either not")
-            print("[probe] Hikvision or its private MIB is disabled.")
+            print(f"[probe]   Test-NetConnection {args.host} -Port 161  # TCP only, but rules out route")
+            print("[probe] If RFC1213 also returned NoSuchInstance, the device responds to")
+            print("[probe] UDP/161 but rejects your community — re-check device web UI.")
             return 1
 
         # 2) System subtree walk
