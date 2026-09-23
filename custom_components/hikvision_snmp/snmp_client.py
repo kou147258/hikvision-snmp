@@ -164,12 +164,13 @@ class HikvisionSnmpClient:
             walked_oids = {r[0] for r in results}
             for leaf in known_leaves:
                 full_oid = f"{oid_root.rstrip('.')}.{leaf}.0"
-                # Build the dotted full oid (root.leaf.0) and check if we already have it
-                # The walk returns oids like "1.3.6.1.4.1.39165.1.7.0"
-                # We compute the same shape and skip if already present
                 if full_oid not in walked_oids:
                     try:
                         val = await self.get(full_oid)
+                        _LOGGER.debug(
+                            "fallback GET %s -> %r (type=%s)",
+                            full_oid, val, type(val).__name__,
+                        )
                         if val is not None:
                             results.append((full_oid, val))
                     except HikvisionSnmpError as exc:
