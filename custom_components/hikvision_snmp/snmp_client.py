@@ -40,6 +40,65 @@ from .const import DEFAULT_PORT, DEFAULT_REQUEST_TIMEOUT, DEFAULT_RETRIES
 
 _LOGGER = logging.getLogger(__name__)
 
+# ---- Shared SnmpEngine singleton ----
+#
+# pysnmp 6.x's ``SnmpEngine()`` constructor itself triggers synchronous
+# ``os.listdir()`` / ``open()`` calls against the local MIB directory
+# (``<pysnmp>/smi/mibs/``). On HAOS the integration runs inside the event
+# loop, so HA's blocking-call detector flags each one as a violation:
+#
+#     Detected blocking call to listdir with args
+#         ('/usr/local/lib/python3.14/site-packages/pysnmp/smi/mibs',)
+#         inside the event loop by custom integration 'hikvision_snmp'
+#         at .../snmp_client.py, line 100: self._engine = SnmpEngine()
+#
+# v0.1.9 added ``lookupMib=False`` to ``getCmd`` / ``bulkCmd`` / ``nextCmd``,
+# but the blocking call comes from ``SnmpEngine.__init__`` itself (which
+# immediately calls ``importSymbols("__SNMP-FRAMEWORK-MIB", ...)`` to seed
+# engine state) — that's a constructor, not a request call, so
+# ``lookupMib=False`` doesn't reach it.
+#
+# Fix: defer ``SnmpEngine()`` construction until the first request and
+# run it inside ``asyncio.to_thread`` so the blocking FS calls happen
+# off-loop. Share a single ``SnmpEngine`` across every
+# ``HikvisionSnmpClient`` in this process — the 480 ms one-time cost
+# shouldn't be paid per device, and pysnmp's per-call state (transport
+# target, UsmUserData / CommunityData, request IDs) is keyed on the
+# request arguments, not on engine state, so cross-client sharing is
+# safe. The lazy init is gated by an ``asyncio.Lock`` to keep
+# concurrent first-callers from racing on ``asyncio.to_thread``.
+#
+# ``SnmpEngine()`` does *not* bind to the asyncio event loop — the
+# ``transportDispatcher`` attribute is left ``None`` and only lazy-created
+# on the first ``getCmd`` / ``bulkCmd`` / ``nextCmd`` (which always run
+# in the HA event loop), so it's safe to construct the engine inside a
+# worker thread.
+
+_ENGINE_SINGLETON: SnmpEngine | None = None
+_ENGINE_INIT_LOCK: "asyncio.Lock | None" = None
+
+
+async def _get_shared_engine() -> SnmpEngine:
+    """Return the process-wide ``SnmpEngine``, constructing it on first use.
+
+    Construction runs in ``asyncio.to_thread`` so the synchronous
+    ``os.listdir`` / ``open`` calls pysnmp makes against its MIB
+    directory don't block the HA event loop.
+    """
+    import asyncio as _asyncio
+
+    global _ENGINE_SINGLETON, _ENGINE_INIT_LOCK
+    if _ENGINE_SINGLETON is not None:
+        return _ENGINE_SINGLETON
+    if _ENGINE_INIT_LOCK is None:
+        _ENGINE_INIT_LOCK = _asyncio.Lock()
+    async with _ENGINE_INIT_LOCK:
+        if _ENGINE_SINGLETON is None:
+            _ENGINE_SINGLETON = await _asyncio.to_thread(SnmpEngine)
+            _LOGGER.debug("pysnmp SnmpEngine singleton constructed")
+    return _ENGINE_SINGLETON
+
+
 # ---- Protocol name → pysnmp protocol-object maps ----
 
 _AUTH_PROTOCOLS = {
@@ -116,7 +175,11 @@ class HikvisionSnmpClient:
         self._port = port
         self._version = version
         self._auth = auth or {}
-        self._engine = SnmpEngine()
+        # SnmpEngine is lazy-initialised in ``_ensure_engine`` on the first
+        # request so its blocking MIB-directory FS scan (``os.listdir`` /
+        # ``open`` on ``<pysnmp>/smi/mibs/``) never runs on the HA event
+        # loop. See module docstring above for the full rationale.
+        self._engine: SnmpEngine | None = None
         self._auth_data = _build_auth(version, self._auth)
         self._target = UdpTransportTarget(
             (host, port),
@@ -264,6 +327,7 @@ class HikvisionSnmpClient:
         """
         import asyncio as _asyncio
 
+        await self._ensure_engine()
         results: list[tuple[str, Any]] = []
         current = ObjectIdentity(oid_root)
         iteration = 0
@@ -328,13 +392,38 @@ class HikvisionSnmpClient:
         return results
 
     async def close(self) -> None:
-        """Tear down the SNMP engine dispatcher."""
-        # pysnmp 6.x uses camelCase; the method exists in all 6.x point releases.
-        self._engine.closeDispatcher()
+        """No-op.
+
+        Pre-v0.1.12 this called ``self._engine.closeDispatcher()`` to tear
+        down the SNMP transport dispatcher, but v0.1.12 introduced a
+        process-wide ``SnmpEngine`` singleton shared across every
+        ``HikvisionSnmpClient`` instance — calling ``closeDispatcher`` on
+        one client would tear down the dispatcher for all other clients in
+        the same process. The integration now lets the asyncio loop
+        recycle the dispatcher when HA shuts down, which is the only
+        moment we'd actually want the dispatcher torn down anyway.
+        """
+        return None
 
     # ---- internal ----
 
+    async def _ensure_engine(self) -> SnmpEngine:
+        """Lazy-init the shared ``SnmpEngine`` on first use.
+
+        Construction runs in ``asyncio.to_thread`` so pysnmp's blocking
+        ``os.listdir`` / ``open`` calls against its MIB directory don't
+        trip HA's event-loop blocking-call monitor. Safe to call from
+        every public async method — fast-paths when the singleton is
+        already built. ``self._engine`` is also populated as a
+        convenience so the rest of the class keeps its existing
+        ``self._engine`` reference.
+        """
+        if self._engine is None:
+            self._engine = await _get_shared_engine()
+        return self._engine
+
     async def _do_get_raw(self, var_binds_in):
+        await self._ensure_engine()
         try:
             error_indication, error_status, _, var_binds = await getCmd(
                 self._engine,
@@ -357,6 +446,7 @@ class HikvisionSnmpClient:
         return var_binds
 
     async def _do_bulk(self, base_oid: ObjectIdentity, max_repetitions: int) -> list:
+        await self._ensure_engine()
         try:
             error_indication, error_status, _, var_binds = await bulkCmd(
                 self._engine,
