@@ -34,6 +34,14 @@ def _stub(name: str, attrs: dict[str, object] | None = None) -> None:
     sys.modules[name] = module
 
 
+# Enable debug logging when --debug is in sys.argv (must happen before argparse)
+log_level = logging.DEBUG if "--debug" in sys.argv else logging.INFO
+logging.basicConfig(
+    level=log_level,
+    format="[%(name)s %(levelname)s] %(message)s",
+)
+
+
 _stub("homeassistant")
 _stub("homeassistant.config_entries", {
     "ConfigEntry": object, "ConfigFlow": type("ConfigFlow", (), {}),
@@ -70,13 +78,6 @@ _stub("homeassistant.components.binary_sensor", {
 # Make the integration package importable
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components"))
-
-# Logging level — INFO by default; DEBUG when --debug flag is passed
-log_level = logging.DEBUG if "--debug" in sys.argv else logging.INFO
-logging.basicConfig(
-    level=log_level,
-    format="[%(name)s %(levelname)s] %(message)s",
-)
 
 from hikvision_snmp.helpers import (  # noqa: E402
     decode_octet_string,
