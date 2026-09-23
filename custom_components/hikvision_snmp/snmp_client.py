@@ -137,7 +137,8 @@ class HikvisionSnmpClient:
 
     async def close(self) -> None:
         """Tear down the SNMP engine dispatcher."""
-        self._engine.close_dispatcher()
+        # pysnmp 6.x uses camelCase; the method exists in all 6.x point releases.
+        self._engine.closeDispatcher()
 
     # ---- internal ----
 
