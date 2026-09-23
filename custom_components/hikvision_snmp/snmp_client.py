@@ -264,6 +264,7 @@ class HikvisionSnmpClient:
                         ContextData(),
                         ObjectType(current),
                         lexicographicMode=False,
+                        lookupMib=False,
                     )
                     break
                 except Exception as exc:  # noqa: BLE001
@@ -315,7 +316,12 @@ class HikvisionSnmpClient:
     async def _do_get_raw(self, var_binds_in):
         try:
             error_indication, error_status, _, var_binds = await getCmd(
-                self._engine, self._auth_data, self._target, ContextData(), *var_binds_in
+                self._engine,
+                self._auth_data,
+                self._target,
+                ContextData(),
+                *var_binds_in,
+                lookupMib=False,
             )
         except Exception as exc:  # noqa: BLE001
             raise HikvisionSnmpError(f"get failed: {exc}") from exc
@@ -340,6 +346,7 @@ class HikvisionSnmpClient:
                 max_repetitions,
                 ObjectType(base_oid),
                 lexicographicMode=False,
+                lookupMib=False,
             )
         except Exception as exc:  # noqa: BLE001
             raise HikvisionSnmpError(f"bulk failed: {exc}") from exc
