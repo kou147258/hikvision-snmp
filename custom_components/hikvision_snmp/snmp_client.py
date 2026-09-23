@@ -188,8 +188,12 @@ class HikvisionSnmpClient:
         return [tuple(vb) for vb in var_binds]
 
 
-def _decode_value(value: Any) -> Any:
-    """Convert pysnmp value objects to plain python types."""
+def decode_value(value: Any) -> Any:
+    """Convert pysnmp value objects to plain python types.
+
+    Public helper so diagnostic tools (e.g. tools/snmp_probe.py) can decode
+    raw var_binds without re-implementing the type handling.
+    """
     if isinstance(value, (NoSuchInstance, NoSuchObject)):
         return None
     if isinstance(value, (int, float, str, bytes, bool)) or value is None:
@@ -198,3 +202,7 @@ def _decode_value(value: Any) -> Any:
         return value.prettyPrint()
     except Exception:  # noqa: BLE001
         return str(value)
+
+
+# Backward-compatible private alias (used internally below).
+_decode_value = decode_value

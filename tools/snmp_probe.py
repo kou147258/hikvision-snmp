@@ -77,7 +77,7 @@ from hikvision_snmp.const import (  # noqa: E402
     HIKVISION_PRIVATE_MIB_ROOT,
     SYSTEM_OIDS,
 )
-from hikvision_snmp.snmp_client import HikvisionSnmpClient  # noqa: E402
+from hikvision_snmp.snmp_client import HikvisionSnmpClient, decode_value  # noqa: E402
 
 
 async def main() -> int:
