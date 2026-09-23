@@ -1,0 +1,13 @@
+{
+  "domain": "hikvision_snmp",
+  "name": "Hikvision SNMP",
+  "version": "0.1.0",
+  "documentation": "https://github.com/43457/hikvision-snmp",
+  "issue_tracker": "https://github.com/43457/hikvision-snmp/issues",
+  "codeowners": ["@43457"],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "integration_type": "device",
+  "loggers": ["pysnmp"],
+  "requirements": ["pysnmp>=6.2.6,<7.0.0"]
+}
