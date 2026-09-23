@@ -106,6 +106,10 @@ class HikvisionSnmpClient:
         # Hikvision V5.x PTZ firmwares don't implement GETBULK; we don't want
         # to spend 4-6s per walk retrying a known-broken op.
         self._bulk_disabled = False
+        # Pause between GETNEXT iterations. Default 200ms helps busy V5.x IPCs
+        # whose SNMP daemon is starved by video streaming. Set to 0 for fast
+        # devices that don't need the breathing room.
+        self._inter_request_delay: float = 0.2
 
     @property
     def host(self) -> str:
@@ -232,8 +236,10 @@ class HikvisionSnmpClient:
         """GETNEXT walk — one OID per request. Universal fallback.
 
         On Hikvision V5.x IPCs under load, GETNEXT requests can be starved by
-        video streaming. We pause + retry once on RequestTimedOut before giving
-        up on a leaf. This recovers most transient failures on busy devices.
+        video streaming. We retry once on RequestTimedOut before giving up on a
+        leaf, and sleep ``inter_request_delay`` seconds between iterations to
+        give the device's SNMP daemon breathing room. Default 200ms — enough for
+        busy V5.x PTZ/IPCs to respond reliably, doubling walk time vs. no delay.
         """
         import asyncio as _asyncio
 
@@ -245,6 +251,9 @@ class HikvisionSnmpClient:
             if iteration > 100:
                 _LOGGER.debug("_walk_next iteration cap reached")
                 break
+            # Pause between iterations to give device time to process other tasks
+            if iteration > 1 and self._inter_request_delay > 0:
+                await _asyncio.sleep(self._inter_request_delay)
             var_binds: list = []
             for attempt in range(2):
                 try:
