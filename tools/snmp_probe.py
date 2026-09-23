@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 import types
 from pathlib import Path
@@ -69,6 +70,12 @@ _stub("homeassistant.components.binary_sensor", {
 # Make the integration package importable
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components"))
+
+# Enable debug logging to surface per-iteration walk diagnostics
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="[%(name)s %(levelname)s] %(message)s",
+)
 
 from hikvision_snmp.helpers import (  # noqa: E402
     decode_octet_string,
