@@ -118,6 +118,33 @@ class HikvisionSnmpClient:
             return None
         return _decode_value(_var_bind_value(var_binds[0]))
 
+    async def get_with_retry(
+        self, oid: str, retries: int = 1, backoff: float = 0.5
+    ) -> Any | None:
+        """GET with retry + backoff for busy / flaky devices.
+
+        On Hikvision V5.x IPCs under load, GET requests get starved by video
+        streaming. A 500ms pause + retry recovers many of these. ``retries`` is
+        the number of additional attempts beyond the first; ``backoff`` is
+        seconds between attempts. Returns None if all attempts fail.
+        """
+        import asyncio as _asyncio
+
+        last_exc: HikvisionSnmpError | None = None
+        for attempt in range(retries + 1):
+            try:
+                return await self.get(oid)
+            except HikvisionSnmpError as exc:
+                last_exc = exc
+                if attempt < retries:
+                    _LOGGER.debug(
+                        "get_with_retry %s attempt %d failed: %s (sleep %.1fs)",
+                        oid, attempt + 1, exc, backoff,
+                    )
+                    await _asyncio.sleep(backoff)
+        _LOGGER.debug("get_with_retry %s exhausted: %s", oid, last_exc)
+        return None
+
     async def get_raw(self, oid: str) -> tuple[Any, Any, Any]:
         """Diagnostic variant — returns (error_indication, error_status, var_binds).
 
