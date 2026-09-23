@@ -102,6 +102,10 @@ class HikvisionSnmpClient:
         self._target = UdpTransportTarget(
             (host, port), timeout=DEFAULT_REQUEST_TIMEOUT, retries=DEFAULT_RETRIES
         )
+        # Once GETBULK times out on this client, skip it forever after. Some
+        # Hikvision V5.x PTZ firmwares don't implement GETBULK; we don't want
+        # to spend 4-6s per walk retrying a known-broken op.
+        self._bulk_disabled = False
 
     @property
     def host(self) -> str:
@@ -128,17 +132,25 @@ class HikvisionSnmpClient:
         First tries GETBULK (fast). If that times out or returns no entries —
         which happens on some Hikvision V5.x firmware that doesn't implement
         GETBULK properly — falls back to GETNEXT (one OID per request, slower
-        but universally supported).
+        but universally supported). Once GETBULK fails once for this client,
+        bulk is disabled permanently (some firmware is broken on GETBULK).
 
         Returns ``[(oid_str, value), ...]`` for OIDs lexicographically >= oid_root.
         """
-        try:
-            bulk_results = await self._walk_bulk(oid_root, max_repetitions)
-            if bulk_results:
-                return bulk_results
-        except HikvisionSnmpError as exc:
-            _LOGGER.debug("GETBULK walk failed (%s), falling back to GETNEXT", exc)
-        # Fallback: GETNEXT
+        if not self._bulk_disabled:
+            try:
+                bulk_results = await self._walk_bulk(oid_root, max_repetitions)
+                if bulk_results:
+                    return bulk_results
+            except HikvisionSnmpError as exc:
+                self._bulk_disabled = True
+                _LOGGER.debug(
+                    "GETBULK walk failed (%s), disabling GETBULK for this client",
+                    exc,
+                )
+            else:
+                # bulk_results was empty — try GETNEXT before giving up
+                pass
         return await self._walk_next(oid_root)
 
     async def _walk_bulk(self, oid_root: str, max_repetitions: int) -> list[tuple[str, Any]]:
