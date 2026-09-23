@@ -128,17 +128,25 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
     )
 
     try:
-        client = HikvisionSnmpClient(host=host, port=port, version=version, auth=auth)
+        # Build the client with a more lenient timeout/retries than the
+        # coordinator's defaults so that the very first GET (which pays
+        # pysnmp's lazy-init cost) and a slow Hikvision V5.x first response
+        # don't trip the test. Passing them through the constructor rather
+        # than rebuilding client._target via __class__() avoids the
+        # ``AbstractTransportTarget.__init__() got multiple values for
+        # argument 'timeout'`` error some pysnmp 6.x builds raise when
+        # __class__() round-trip resolves to the wrong __init__ signature.
+        client = HikvisionSnmpClient(
+            host=host,
+            port=port,
+            version=version,
+            auth=auth,
+            timeout=3,
+            retries=2,
+        )
     except Exception as exc:  # noqa: BLE001
         _LOGGER.warning("SNMP client construction failed for %s:%s: %s", host, port, exc)
         return None, ""
-
-    # Replace the client's transport target with one that has a more lenient
-    # timeout for the connection test specifically. The coordinator that
-    # takes over after the entry is created uses its own target.
-    client._target = client._target.__class__(
-        (host, port), timeout=3, retries=2,
-    )
 
     try:
         # Warm-up: ping a standard MIB-II scalar that every SNMP agent

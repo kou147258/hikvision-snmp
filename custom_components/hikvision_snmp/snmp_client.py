@@ -92,7 +92,26 @@ class HikvisionSnmpClient:
         port: int = DEFAULT_PORT,
         version: str = "v2c",
         auth: dict[str, str] | None = None,
+        timeout: float | None = None,
+        retries: int | None = None,
     ) -> None:
+        """Construct a per-host async SNMP client.
+
+        ``timeout`` and ``retries`` are the per-request timeout (seconds) and
+        retry count passed to :class:`UdpTransportTarget`. They default to the
+        integration-wide ``DEFAULT_REQUEST_TIMEOUT`` / ``DEFAULT_RETRIES`` for
+        the data-polling coordinator, but the config-flow connection test
+        passes ``timeout=3, retries=2`` to absorb both pysnmp's first-request
+        lazy-init overhead and a slow first response from Hikvision V5.x
+        firmware.
+
+        Passing them as constructor arguments (rather than rebuilding the
+        transport target in-place, which a previous version of this code
+        attempted via ``client._target.__class__((host, port), timeout=3, ...)``)
+        avoids ``AbstractTransportTarget.__init__() got multiple values for
+        argument 'timeout'`` errors that some pysnmp 6.x builds raise when the
+        rebuilt target's MRO resolution picks the wrong ``__init__`` signature.
+        """
         self._host = host
         self._port = port
         self._version = version
@@ -100,7 +119,9 @@ class HikvisionSnmpClient:
         self._engine = SnmpEngine()
         self._auth_data = _build_auth(version, self._auth)
         self._target = UdpTransportTarget(
-            (host, port), timeout=DEFAULT_REQUEST_TIMEOUT, retries=DEFAULT_RETRIES
+            (host, port),
+            timeout=timeout if timeout is not None else DEFAULT_REQUEST_TIMEOUT,
+            retries=retries if retries is not None else DEFAULT_RETRIES,
         )
         # Once GETBULK times out on this client, skip it forever after. Some
         # Hikvision V5.x PTZ firmwares don't implement GETBULK; we don't want
