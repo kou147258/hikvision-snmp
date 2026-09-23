@@ -70,6 +70,40 @@ Settings → Devices & Services → Hikvision SNMP → ⋯ → **Configure**:
 - Home Assistant 2025.4+
 - Python 3.11+
 
+## Known Limitations (v0.1.0)
+
+### Hikvision V5.x PTZ firmware quirks
+
+Some Hikvision V5.x PTZ / standalone-IPC firmwares (verified on
+`DS-2DF8C832MX-ZDK` V5.10.0 build 260519) have three behaviours the SNMP client
+must work around:
+
+1. **GETBULK times out** — bulkCmd packets get no response from the device.
+   The integration detects this once per host and silently switches to
+   GETNEXT for the remainder of the session.
+2. **GETNEXT walk truncates mid-subtree** — the device starts dropping
+   GETNEXT responses around leaf .11. The integration compensates by
+   issuing single-GET fallbacks for every leaf index listed in
+   `SYSTEM_OIDS` that the walk missed. Result: ~21/23 system scalars are
+   reliably populated.
+3. **Three INTEGER leaves consistently timeout even on single GET**
+   (`.12.0` / `.24.0` / `.25.0`). These are exposed as `uptime_seconds`,
+   `online`, and `recording`. The integration handles the gap gracefully:
+   - `uptime_seconds` shows `unavailable` (informational only).
+   - `online` (binary_sensor) falls back to `coordinator.last_update_success`.
+   - `recording` (binary_sensor) returns `unknown` for IPCs without a
+     channel table.
+
+These quirks are firmware bugs in V5.x PTZ firmware; they do not affect
+NVRs or older-firmware IPCs that should work with native GETBULK walks.
+
+### Not supported (deferred to v0.2)
+
+- ISAPI / HTTP fallback
+- Switch / control entities (reboot, channel on/off)
+- PTZ control
+- HACS default repository submission
+
 ## License
 
 MIT © 2026 43457. See `LICENSE`.
