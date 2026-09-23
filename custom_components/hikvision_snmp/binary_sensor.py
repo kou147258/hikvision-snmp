@@ -1,4 +1,16 @@
-"""Binary sensor platform for Hikvision SNMP."""
+"""Binary sensor platform for Hikvision SNMP.
+
+Two product lines are supported:
+
+- **IPC / PTZ (enterprise 39165)** — exposes explicit ``.24.0`` (online,
+  INTEGER 1/0) and ``.25.0`` (recording, INTEGER 1/0) scalars. Recording
+  can additionally be inferred from any per-channel ``recording`` leaf.
+- **NVR (enterprise 50001)** — no ``.24`` / ``.25`` scalars. Online is
+  derived from ``coordinator.last_update_success`` (the coordinator is
+  considered the source of truth for reachability). Recording is derived
+  from any NVR channel having ``motion_flag > 0``, OR from the device-level
+  ``active_state`` (``identification.active_state`` == 1).
+"""
 
 from __future__ import annotations
 
@@ -10,7 +22,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, VENDOR_HIKVISION_NVR
 from .coordinator import HikvisionDataUpdateCoordinator
 from .helpers import parse_int
 
@@ -41,10 +53,12 @@ class _Base(
 
 
 class HikvisionOnlineBinarySensor(_Base):
-    """Device online state (Hikvision OID .24.0: INTEGER 1=online, 0=offline).
+    """Device online state.
 
-    Falls back to ``coordinator.last_update_success`` when the OID is absent
-    on firmware variants that don't expose it.
+    Resolution order:
+        1. IPC scalar ``.24.0`` (INTEGER 1 = online, 0 = offline).
+        2. NVR ``active_state`` (``identification.active_state`` == 1).
+        3. ``coordinator.last_update_success`` as a final fallback.
     """
 
     _attr_name = "Online"
@@ -58,21 +72,34 @@ class HikvisionOnlineBinarySensor(_Base):
 
     @property
     def is_on(self) -> bool | None:
-        # Prefer the device-reported OID if present
+        if self.coordinator.data is None:
+            return None
+        # 1. IPC .24.0
         oid_val = parse_int(
             self.coordinator.data.get("identification", {}).get("online", {}).get("0")
-        ) if self.coordinator.data else None
+        )
         if oid_val is not None:
             return oid_val == 1
-        # Fallback: coordinator last-update success
+        # 2. NVR active_state — 1 means at least one channel is alive
+        if self.coordinator.vendor == VENDOR_HIKVISION_NVR:
+            nvr_state = parse_int(
+                self.coordinator.data.get("identification", {}).get("active_state", {}).get("0")
+            )
+            if nvr_state is not None:
+                return nvr_state == 1
+        # 3. Coordinator heartbeat as final fallback
         return self.coordinator.last_update_success
 
 
 class HikvisionRecordingBinarySensor(_Base):
     """Recording state for the device.
 
-    On standalone IPCs, derived from OID .25.0 (INTEGER). On NVRs, derived
-    from any channel in the channel table having recording=1.
+    Resolution order:
+        1. IPC scalar ``.25.0`` (INTEGER 1/0).
+        2. NVR: any channel with ``motion_flag > 0`` in the channel table.
+        3. NVR: device-level ``active_state`` == 1 (at least one channel
+           is active — not strictly "recording" but is the closest device-
+           level indicator available in the 50001 MIB).
     """
 
     _attr_name = "Recording"
@@ -87,14 +114,29 @@ class HikvisionRecordingBinarySensor(_Base):
     def is_on(self) -> bool | None:
         if self.coordinator.data is None:
             return None
-        # NVR-style: any channel in channel table
-        rec = self.coordinator.data.get("channels", {}).get("recording", {})
-        if rec:
-            return any(parse_int(v) == 1 for v in rec.values())
-        # IPC-style: device-level recording OID
+
+        # IPC standalone camera: any per-channel recording flag
+        ipc_ch_rec = self.coordinator.data.get("channels", {}).get("recording", {})
+        if ipc_ch_rec:
+            return any(parse_int(v) == 1 for v in ipc_ch_rec.values())
+
+        # IPC device-level scalar
         oid_val = parse_int(
             self.coordinator.data.get("identification", {}).get("recording", {}).get("0")
         )
         if oid_val is not None:
             return oid_val == 1
+
+        # NVR: any channel with motion_flag > 0
+        if self.coordinator.vendor == VENDOR_HIKVISION_NVR:
+            nvr_motion = self.coordinator.data.get("channels", {}).get("motion_flag", {})
+            if nvr_motion:
+                return any((parse_int(v) or 0) > 0 for v in nvr_motion.values())
+            # NVR: device-level active_state
+            active = parse_int(
+                self.coordinator.data.get("identification", {}).get("active_state", {}).get("0")
+            )
+            if active is not None:
+                return active == 1
+
         return None

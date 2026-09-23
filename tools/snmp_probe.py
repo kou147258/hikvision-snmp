@@ -1,15 +1,23 @@
 """Standalone SNMP probe for Hikvision devices — no Home Assistant needed.
+
+Auto-detects both Hikvision product lines:
+
+- IPC / PTZ (enterprise 39165) — V5.x flat MIB under ``.39165.1.<N>.0`` plus
+  optional channel/disk sub-trees at ``.39165.2`` / ``.39165.3``.
+- NVR (enterprise 50001) — ~22 scalars under ``.50001.1.<N>.0`` plus a
+  per-channel sub-table at ``.50001.1.241.1.<col>.<row>.0``.
+
 Run this BEFORE copying the integration into HA to validate SNMP works
 and the OIDs return data.
 
 Usage (PowerShell or bash):
     python tools/snmp_probe.py --host 192.168.10.100 --community public
-    python tools/snmp_probe.py --host 192.168.10.100 --version v3 \
-        --username admin --auth-protocol SHA --auth-key 'mykey123' \
+    python tools/snmp_probe.py --host 192.168.10.100 --version v3 \\
+        --username admin --auth-protocol SHA --auth-key 'mykey123' \\
         --privacy-protocol AES128 --privacy-key 'mypriv123'
 
-Output: prints sysDescr + system subtree scalars + channel/disk table
-summaries so you can confirm the device responds.
+Output: prints sysDescr + vendor auto-detect + system subtree scalars +
+channel/disk/table summaries so you can confirm the device responds.
 """
 
 from __future__ import annotations
@@ -21,10 +29,9 @@ import sys
 import types
 from pathlib import Path
 
-# Stub homeassistant so the integration package's __init__.py can be loaded
-# without a full HA install. The probe only uses helpers / const / snmp_client,
-# none of which actually need HA at runtime — the HA imports in __init__.py
-# are just type hints and decorators.
+
+# ---- HA stubs (so the integration package imports outside HA) ----
+
 def _stub(name: str, attrs: dict[str, object] | None = None) -> None:
     if name in sys.modules:
         return
@@ -51,7 +58,9 @@ _stub("homeassistant.const", {
     "CONF_HOST": "host", "CONF_NAME": "name", "CONF_PORT": "port",
     "PERCENTAGE": "%",
     "UnitOfDataSize": types.SimpleNamespace(GIGABYTES="GB"),
-    "UnitOfInformation": types.SimpleNamespace(KILOBITS_PER_SECOND="kbps"),
+    "UnitOfInformation": types.SimpleNamespace(
+        KILOBITS_PER_SECOND="kbps", MEGAHERTZ="MHz", BYTES="B"
+    ),
     "UnitOfTemperature": types.SimpleNamespace(CELSIUS="°C"),
     "UnitOfTime": types.SimpleNamespace(SECONDS="s"),
 })
@@ -75,7 +84,6 @@ _stub("homeassistant.components.binary_sensor", {
     "BinarySensorEntity": type("BinarySensorEntity", (), {}),
 })
 
-# Make the integration package importable
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "custom_components"))
 
@@ -88,14 +96,89 @@ from hikvision_snmp.helpers import (  # noqa: E402
 from hikvision_snmp.const import (  # noqa: E402
     CHANNEL_OIDS,
     DISK_OIDS,
-    HIKVISION_PRIVATE_MIB_ROOT,
+    HIKVISION_IPC_MIB_ROOT,
+    HIKVISION_NVR_MIB_ROOT,
+    NVR_CHANNEL_OIDS,
+    NVR_SYSTEM_OIDS,
     SYSTEM_OIDS,
+    VENDOR_HIKVISION_IPC,
+    VENDOR_HIKVISION_NVR,
 )
 from hikvision_snmp.snmp_client import HikvisionSnmpClient, decode_value  # noqa: E402
 
 
+async def _probe_one(
+    client: HikvisionSnmpClient, oid: str, label: str
+) -> str | None:
+    """Single GET against ``oid``; return decoded string or None on any failure."""
+    try:
+        err_ind, err_stat, vbs = await client.get_raw(oid)
+        if err_ind or err_stat:
+            return None
+        val = decode_value(vbs[0][1])
+        if val is None:
+            return None
+        decoded = decode_octet_string(val)
+        return decoded or None
+    except Exception as exc:  # noqa: BLE001
+        if "--debug" in sys.argv:
+            print(f"[probe] {label} get failed: {exc}")
+        return None
+
+
+async def _detect_vendor(client: HikvisionSnmpClient) -> tuple[str | None, str | None]:
+    """Auto-detect vendor; return (vendor_id, sys_descr_string).
+
+    Tries IPC model scalar first; falls back to NVR serial scalar.
+    """
+    # Try IPC .39165.1.1.0 (model)
+    descr = await _probe_one(client, f"{HIKVISION_IPC_MIB_ROOT}.1.1.0", "IPC")
+    if descr:
+        return VENDOR_HIKVISION_IPC, descr
+    # Fall back to NVR .50001.1.3.0 (serial)
+    descr = await _probe_one(client, f"{HIKVISION_NVR_MIB_ROOT}.1.3.0", "NVR")
+    if descr:
+        return VENDOR_HIKVISION_NVR, descr
+    return None, None
+
+
+def _print_ipc_scalars(sys_dec: dict) -> None:
+    for key in SYSTEM_OIDS:
+        entry = sys_dec.get(key, {})
+        if not entry:
+            print(f"  {key:20s}: (missing)")
+            continue
+        raw = entry.get("0") or next(iter(entry.values()), None)
+        if key in ("cpu", "memory_used_pct", "storage_total", "storage_used_pct",
+                   "memory_total"):
+            num, unit = parse_value_with_unit(raw)
+            print(f"  {key:20s}: raw={decode_octet_string(raw)!r}  parsed={num} {unit}")
+        elif key in ("model", "device_name", "firmware", "manufacturer", "mac",
+                     "device_time", "video_codec_primary", "video_codec_secondary",
+                     "network_type"):
+            print(f"  {key:20s}: {decode_octet_string(raw)!r}")
+        else:
+            print(f"  {key:20s}: {raw!r}")
+
+
+def _print_nvr_scalars(sys_dec: dict) -> None:
+    for key in NVR_SYSTEM_OIDS:
+        entry = sys_dec.get(key, {})
+        if not entry:
+            print(f"  {key:24s}: (missing)")
+            continue
+        raw = entry.get("0") or next(iter(entry.values()), None)
+        if key in ("cpu_freq",):
+            num, unit = parse_value_with_unit(raw)
+            print(f"  {key:24s}: raw={decode_octet_string(raw)!r}  parsed={num} {unit}")
+        elif key in ("serial", "trap_target", "ip_addr", "label_or_status"):
+            print(f"  {key:24s}: {decode_octet_string(raw)!r}")
+        else:
+            print(f"  {key:24s}: {raw!r}")
+
+
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="Hikvision SNMP probe")
+    parser = argparse.ArgumentParser(description="Hikvision SNMP probe (dual-vendor auto-detect)")
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=161)
     parser.add_argument("--version", choices=["v2c", "v3"], default="v2c")
@@ -126,7 +209,7 @@ async def main() -> int:
     print(f"[probe] connecting to {args.host}:{args.port} via {args.version}...")
 
     try:
-        # 0) Diagnostic — try standard RFC1213 sysDescr to verify SNMP works at all
+        # 0) Diagnostic — standard RFC1213 sysDescr to verify SNMP works at all
         try:
             err_ind, err_stat, std_vbs = await client.get_raw("1.3.6.1.2.1.1.1.0")
             if err_ind:
@@ -141,104 +224,120 @@ async def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[probe] RFC1213 get failed: {exc}")
 
-        # 1) Hikvision private MIB sysDescr (raw) — V5.x flat structure at .1.1.0
-        try:
-            err_ind, err_stat, hik_vbs = await client.get_raw(f"{HIKVISION_PRIVATE_MIB_ROOT}.1.1.0")
-            if err_ind:
-                print(f"[probe] Hikvision error_indication: {err_ind}")
-                print(f"[probe]   (this is what pysnmp saw from the network. If it says")
-                print(f"[probe]    'usmStats' / 'authorization' / similar — your community")
-                print(f"[probe]    string or v3 credentials are wrong, or SNMP is disabled.)")
-                return 1
-            elif err_stat:
-                print(f"[probe] Hikvision error_status: {err_stat.prettyPrint()}")
-                return 1
-            hik_val = decode_value(hik_vbs[0][1])
-            print(f"[probe] Hikvision sysDescr: {decode_octet_string(hik_val)!r}")
-            print(f"[probe]   (raw value type: {type(hik_vbs[0][1]).__name__})")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[probe] Hikvision get failed: {exc}")
+        # 1) Vendor auto-detect
+        vendor, sys_descr = await _detect_vendor(client)
+        if not vendor:
+            print("[probe] could not detect Hikvision vendor — neither .39165 nor .50001 responded.")
+            print("[probe] diagnostic: dumping any data under .39165.1 / .50001.1...")
+            for label, root in (("IPC .39165.1", HIKVISION_IPC_MIB_ROOT + ".1"),
+                                ("NVR .50001.1", HIKVISION_NVR_MIB_ROOT + ".1")):
+                try:
+                    print(f"[probe] walking {label}...")
+                    walk = await client.walk(root, max_repetitions=20)
+                    if walk:
+                        print(f"[probe]   found {len(walk)} entries:")
+                        for oid_str, val in walk[:60]:
+                            print(f"     {oid_str:60s} = {val!r}")
+                        if len(walk) > 60:
+                            print(f"     ... ({len(walk) - 60} more)")
+                    else:
+                        print(f"[probe]   no entries under {label}")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[probe]   walk failed: {exc}")
             return 1
 
-        sys_descr = hik_val
-        if not sys_descr:
-            print()
-            print("[probe] === DIAGNOSTICS — discovering actual OID tree ===")
-            try:
-                print("[probe] walking .1.3.6.1.4.1.39165.1 (Hikvision system subtree)...")
-                hik_walk = await client.walk("1.3.6.1.4.1.39165.1", max_repetitions=20)
-                if hik_walk:
-                    print(f"[probe]   found {len(hik_walk)} entries:")
-                    for oid_str, val in hik_walk[:60]:
-                        print(f"     {oid_str:60s} = {val!r}")
-                    if len(hik_walk) > 60:
-                        print(f"     ... ({len(hik_walk) - 60} more)")
-                else:
-                    print("[probe]   no entries under .1.3.6.1.4.1.39165.1")
-            except Exception as exc:  # noqa: BLE001
-                print(f"[probe] walk failed: {exc}")
-            return 1
+        vendor_label = {
+            VENDOR_HIKVISION_IPC: "Hikvision IPC / PTZ (enterprise 39165)",
+            VENDOR_HIKVISION_NVR: "Hikvision NVR (enterprise 50001)",
+        }.get(vendor, vendor)
+        print(f"[probe] detected vendor: {vendor_label}")
+        print(f"[probe] sysDescr: {sys_descr!r}")
 
-        # 2) System subtree walk (.1.3.6.1.4.1.39165.1)
-        print("[probe] walking .39165.1 (system scalars)...")
+        # 2) System subtree walk (vendor-aware)
+        if vendor == VENDOR_HIKVISION_NVR:
+            mib_root = HIKVISION_NVR_MIB_ROOT
+            sys_oids = NVR_SYSTEM_OIDS
+            sys_label = ".50001.1 (NVR system scalars)"
+            print_fn = _print_nvr_scalars
+        else:
+            mib_root = HIKVISION_IPC_MIB_ROOT
+            sys_oids = SYSTEM_OIDS
+            sys_label = ".39165.1 (IPC system scalars)"
+            print_fn = _print_ipc_scalars
+
+        print(f"[probe] walking {sys_label}...")
+        sys_root = f"{mib_root}.1"
         sys_raw = await client.walk(
-            f"{HIKVISION_PRIVATE_MIB_ROOT}.1",
-            known_leaves=list(SYSTEM_OIDS.values()),
+            sys_root,
+            known_leaves=list(sys_oids.values()),
         )
-        sys_dec = decode_walk_results(sys_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.1", SYSTEM_OIDS)
-        print("[probe] system subtree scalars:")
-        for key in SYSTEM_OIDS:
-            entry = sys_dec.get(key, {})
-            if not entry:
-                print(f"  {key:20s}: (missing)")
-                continue
-            raw = entry.get("0") or next(iter(entry.values()), None)
-            # For STRING-with-unit metrics, show both raw and parsed
-            if key in ("cpu", "memory_used_pct", "storage_total", "storage_used_pct",
-                       "memory_total"):
-                num, unit = parse_value_with_unit(raw)
-                print(f"  {key:20s}: raw={decode_octet_string(raw)!r}  parsed={num} {unit}")
-            elif key in ("model", "device_name", "firmware", "manufacturer", "mac",
-                         "device_time", "video_codec_primary", "video_codec_secondary",
-                         "network_type"):
-                print(f"  {key:20s}: {decode_octet_string(raw)!r}")
-            else:
-                print(f"  {key:20s}: {raw!r}")
+        sys_dec = decode_walk_results(sys_raw, sys_root, sys_oids)
+        print(f"[probe] system subtree scalars ({len(sys_dec)} keys):")
+        print_fn(sys_dec)
 
-        # 3) Channel subtree walk (NVR only — IPCs don't expose this)
-        print("[probe] walking .39165.2 (channels)...")
-        try:
-            ch_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.2")
-            ch_dec = decode_walk_results(ch_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.2", CHANNEL_OIDS)
-            n_channels = len(ch_dec.get("name", {}))
-            n_online = sum(1 for v in ch_dec.get("online", {}).values() if parse_int(v) == 1)
-            n_recording = sum(1 for v in ch_dec.get("recording", {}).values() if parse_int(v) == 1)
-            print(f"[probe] channels: {n_channels} total, {n_online} online, {n_recording} recording")
-            for idx in sorted(ch_dec.get("name", {}).keys(), key=lambda x: int(x)):
-                print(f"  channel {idx}: name={decode_octet_string(ch_dec['name'].get(idx))!r} "
-                      f"online={parse_int(ch_dec.get('online', {}).get(idx))} "
-                      f"rec={parse_int(ch_dec.get('recording', {}).get(idx))} "
-                      f"bitrate={parse_int(ch_dec.get('bitrate', {}).get(idx))} kbps")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[probe] channels: skipped ({exc})")
+        # 3) Channel / disk subtree walks (vendor-aware)
+        if vendor == VENDOR_HIKVISION_NVR:
+            # NVR channel sub-table at .50001.1.241.1.<col>.<row>.0
+            ch_root = f"{mib_root}.1.241.1"
+            print(f"[probe] walking {ch_root} (NVR channel sub-table)...")
+            try:
+                ch_raw = await client.walk(ch_root, max_repetitions=10)
+                ch_dec = decode_walk_results(ch_raw, ch_root, NVR_CHANNEL_OIDS)
+                n_channels = len(ch_dec.get("label", {}))
+                n_motion = sum(1 for v in ch_dec.get("motion_flag", {}).values() if (parse_int(v) or 0) > 0)
+                print(f"[probe] channels: {n_channels} total, {n_motion} with motion_flag>0")
+                for idx in sorted(ch_dec.get("label", {}).keys(), key=lambda x: int(x.split(".")[0])):
+                    print(
+                        f"  channel {idx}: label={decode_octet_string(ch_dec['label'].get(idx))!r} "
+                        f"motion={parse_int(ch_dec.get('motion_flag', {}).get(idx))} "
+                        f"substream={parse_int(ch_dec.get('sub_stream_size', {}).get(idx))} "
+                        f"bytes_used={parse_int(ch_dec.get('bytes_used', {}).get(idx))}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[probe] channels: skipped ({exc})")
+            # NVRs do not expose a separate disk sub-tree in this MIB
+            print("[probe] disks: NVR does not expose a separate disk subtree; "
+                  "storage is reported per-channel via bytes_used.")
+        else:
+            # IPC channel + disk subtrees
+            ch_root = f"{mib_root}.2"
+            print(f"[probe] walking {ch_root} (IPC channels)...")
+            try:
+                ch_raw = await client.walk(ch_root)
+                ch_dec = decode_walk_results(ch_raw, ch_root, CHANNEL_OIDS)
+                n_channels = len(ch_dec.get("name", {}))
+                n_online = sum(1 for v in ch_dec.get("online", {}).values() if parse_int(v) == 1)
+                n_recording = sum(1 for v in ch_dec.get("recording", {}).values() if parse_int(v) == 1)
+                print(f"[probe] channels: {n_channels} total, {n_online} online, {n_recording} recording")
+                for idx in sorted(ch_dec.get("name", {}).keys(), key=lambda x: int(x.split(".")[0])):
+                    print(
+                        f"  channel {idx}: name={decode_octet_string(ch_dec['name'].get(idx))!r} "
+                        f"online={parse_int(ch_dec.get('online', {}).get(idx))} "
+                        f"rec={parse_int(ch_dec.get('recording', {}).get(idx))} "
+                        f"bitrate={parse_int(ch_dec.get('bitrate', {}).get(idx))} kbps"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[probe] channels: skipped ({exc})")
 
-        # 4) Disk subtree walk (NVR only — IPCs don't expose this)
-        print("[probe] walking .39165.3 (disks)...")
-        try:
-            disk_raw = await client.walk(f"{HIKVISION_PRIVATE_MIB_ROOT}.3")
-            disk_dec = decode_walk_results(disk_raw, f"{HIKVISION_PRIVATE_MIB_ROOT}.3", DISK_OIDS)
-            n_disks = len(disk_dec.get("name", {}))
-            print(f"[probe] disks: {n_disks} total")
-            for idx in sorted(disk_dec.get("name", {}).keys(), key=lambda x: int(x)):
-                cap_mb = parse_int(disk_dec.get("capacity", {}).get(idx))
-                free_mb = parse_int(disk_dec.get("free", {}).get(idx))
-                cap_gb = round(cap_mb / 1024, 2) if cap_mb else None
-                free_gb = round(free_mb / 1024, 2) if free_mb else None
-                print(f"  disk {idx}: name={decode_octet_string(disk_dec['name'].get(idx))!r} "
-                      f"capacity={cap_gb} GB free={free_gb} GB "
-                      f"temp={parse_int(disk_dec.get('temperature', {}).get(idx))}°C")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[probe] disks: skipped ({exc})")
+            disk_root = f"{mib_root}.3"
+            print(f"[probe] walking {disk_root} (IPC disks)...")
+            try:
+                disk_raw = await client.walk(disk_root)
+                disk_dec = decode_walk_results(disk_raw, disk_root, DISK_OIDS)
+                n_disks = len(disk_dec.get("name", {}))
+                print(f"[probe] disks: {n_disks} total")
+                for idx in sorted(disk_dec.get("name", {}).keys(), key=lambda x: int(x.split(".")[0])):
+                    cap_mb = parse_int(disk_dec.get("capacity", {}).get(idx))
+                    free_mb = parse_int(disk_dec.get("free", {}).get(idx))
+                    cap_gb = round(cap_mb / 1024, 2) if cap_mb else None
+                    free_gb = round(free_mb / 1024, 2) if free_mb else None
+                    print(
+                        f"  disk {idx}: name={decode_octet_string(disk_dec['name'].get(idx))!r} "
+                        f"capacity={cap_gb} GB free={free_gb} GB "
+                        f"temp={parse_int(disk_dec.get('temperature', {}).get(idx))}°C"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[probe] disks: skipped ({exc})")
 
         print("[probe] OK — integration should work against this device.")
         return 0

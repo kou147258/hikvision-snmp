@@ -114,6 +114,8 @@ NVR_SYSTEM_OIDS: dict[str, str] = {
     "cpu_freq": "201",          # STRING "1000MHZ"
     "temperature_or_load": "220",  # INTEGER 290..1130 — device-specific metric
     "traffic_or_iops": "221",   # INTEGER 0..60
+    "active_state": "230",      # INTEGER 1 — at-least-one-channel-active flag
+    "online_state": "231",      # INTEGER 2 — count of online channels
     "channel_count": "240",     # INTEGER 5 — number of channels / disks
 }
 
