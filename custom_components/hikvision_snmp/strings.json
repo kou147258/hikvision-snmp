@@ -42,7 +42,7 @@
   "options": {
     "flow_title": "{name} options",
     "step": {
-      "options_general": {
+      "init": {
         "title": "Polling options",
         "data": {
           "scan_interval": "Poll interval (seconds)"

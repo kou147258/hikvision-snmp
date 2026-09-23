@@ -65,19 +65,30 @@ def _snmp_data_schema(version: str) -> vol.Schema:
     is used for both form display and form-submission validation
     (voluptuous rejects extra keys by default, so leaving ``CONF_VERSION``
     out of the validation schema would always fail).
+
+    ``extra=vol.ALLOW_EXTRA`` is required because the form is rebuilt
+    with only the per-version fields but HA's HTML form submission
+    always carries all currently-rendered fields, including the v2c
+    ``community`` field as an empty string when the user has selected
+    v3 — without ``ALLOW_EXTRA`` that empty key trips ``vol.Invalid``.
     """
     base = {vol.Required(CONF_VERSION, default="v2c"): vol.In(SNMP_VERSIONS)}
+    non_empty = vol.All(str, vol.Length(min=1))
     if version == "v2c":
-        return vol.Schema({**base, vol.Required(CONF_COMMUNITY): str})
+        return vol.Schema(
+            {**base, vol.Required(CONF_COMMUNITY): non_empty},
+            extra=vol.ALLOW_EXTRA,
+        )
     return vol.Schema(
         {
             **base,
-            vol.Required(CONF_USERNAME): str,
+            vol.Required(CONF_USERNAME): non_empty,
             vol.Required(CONF_AUTH_PROTOCOL, default="SHA"): vol.In(V3_AUTH_PROTOCOLS),
-            vol.Required(CONF_AUTH_KEY): str,
+            vol.Required(CONF_AUTH_KEY): non_empty,
             vol.Required(CONF_PRIVACY_PROTOCOL, default="AES128"): vol.In(V3_PRIVACY_PROTOCOLS),
-            vol.Required(CONF_PRIVACY_KEY): str,
-        }
+            vol.Required(CONF_PRIVACY_KEY): non_empty,
+        },
+        extra=vol.ALLOW_EXTRA,
     )
 
 
@@ -222,10 +233,19 @@ class HikvisionSnmpOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Options step — scan interval only.
+
+        The standard HA OptionsFlow pattern uses ``async_step_init`` with
+        ``step_id="init"``. (An earlier version of this code used
+        ``step_id="options_general"`` which routed form submission to a
+        non-existent method and produced the same
+        ``Handler HikvisionSnmpOptionsFlow doesn't support step ...``
+        error as the original config-flow bug.)
+        """
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
         return self.async_show_form(
-            step_id="options_general",
+            step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required(

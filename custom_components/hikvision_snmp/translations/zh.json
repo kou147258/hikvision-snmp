@@ -42,7 +42,7 @@
   "options": {
     "flow_title": "{name} 选项",
     "step": {
-      "options_general": {
+      "init": {
         "title": "轮询选项",
         "data": {
           "scan_interval": "轮询间隔(秒)"
