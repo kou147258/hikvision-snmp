@@ -1,8 +1,20 @@
-"""Async pysnmp v6 wrapper for Hikvision devices.
+"""Async pysnmp wrapper for Hikvision devices.
 
-Uses ``pysnmp.hlapi.asyncio`` (PySNMP 6.x legacy API). PySNMP 7+ is
-intentionally not supported by this integration to keep the dependency range
-narrow and match the existing reference integration's tested baseline.
+Works with pysnmp 6.x and pysnmp 7.x via runtime API dispatch:
+
+- **pysnmp 6.x** (``UdpTransportTarget((host, port), timeout=N, retries=M)``,
+  ``getCmd`` / ``bulkCmd`` / ``nextCmd``) — the legacy API the integration
+  was originally written against.
+- **pysnmp 7.x** (``await UdpTransportTarget.create((host, port), ...)``,
+  ``get_cmd`` / ``bulk_cmd`` / ``next_cmd``) — HAOS 2026.x ships
+  pysnmp 7.1.29 system-wide at
+  ``/usr/local/lib/python3.14/site-packages/pysnmp/``, and the manifest
+  pin ``pysnmp<8.0.0`` doesn't override that.
+
+The two APIs differ at the request level (target constructor) AND at
+the module-load level (cmd function names). Both dispatch points use
+runtime introspection — see ``_detect_udp_target_api`` and
+``_resolve_cmd_functions``.
 """
 
 from __future__ import annotations
@@ -41,6 +53,8 @@ import pysnmp.hlapi.asyncio as _pysnmp_hlapi
 from pysnmp.proto.api import v2c as api_v2c
 from pysnmp.proto.rfc1905 import NoSuchInstance, NoSuchObject
 
+from .const import DEFAULT_PORT, DEFAULT_REQUEST_TIMEOUT, DEFAULT_RETRIES
+
 
 def _resolve_cmd_functions():
     """Resolve ``get`` / ``bulk`` / ``next`` cmd function names across pysnmp major versions.
@@ -74,8 +88,6 @@ def _resolve_cmd_functions():
 
 
 getCmd, bulkCmd, nextCmd = _resolve_cmd_functions()
-
-from .const import DEFAULT_PORT, DEFAULT_REQUEST_TIMEOUT, DEFAULT_RETRIES
 
 _LOGGER = logging.getLogger(__name__)
 
