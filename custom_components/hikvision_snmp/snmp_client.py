@@ -134,7 +134,15 @@ async def _get_shared_engine() -> SnmpEngine:
 
     Construction runs in ``asyncio.to_thread`` so the synchronous
     ``os.listdir`` / ``open`` calls pysnmp makes against its MIB
-    directory don't block the HA event loop.
+    directory don't block the HA event loop. After construction we
+    also warm the MIB builder's cache by importing the standard
+    MIB-II modules the integration queries (``SNMPv2-MIB``, ``IF-MIB``,
+    ``RFC1213-MIB``) — without the warm-up, every first ``getCmd`` /
+    ``bulkCmd`` / ``nextCmd`` call resolves OIDs lazily, which hits
+    pysnmp's ``DirMibSource._getData`` → ``os.listdir`` + ``open`` again
+    on the HA event loop. Both the engine construction and the MIB
+    cache warm-up run in the same worker thread so the FS work is
+    off-loop.
     """
     import asyncio as _asyncio
 
@@ -145,9 +153,86 @@ async def _get_shared_engine() -> SnmpEngine:
         _ENGINE_INIT_LOCK = _asyncio.Lock()
     async with _ENGINE_INIT_LOCK:
         if _ENGINE_SINGLETON is None:
-            _ENGINE_SINGLETON = await _asyncio.to_thread(SnmpEngine)
-            _LOGGER.debug("pysnmp SnmpEngine singleton constructed")
+            def _build_engine_and_warm_mibs():
+                engine = SnmpEngine()
+                # Pre-load standard MIB-II modules so the first request's
+                # OID resolution hits cache, not the FS scanner.
+                _warm_mib_cache(engine)
+                return engine
+
+            _ENGINE_SINGLETON = await _asyncio.to_thread(
+                _build_engine_and_warm_mibs
+            )
+            _LOGGER.debug("pysnmp SnmpEngine singleton constructed (with MIB warm-up)")
     return _ENGINE_SINGLETON
+
+
+def _get_mib_builder(engine: SnmpEngine):
+    """Locate pysnmp's ``MibBuilder`` across the 6.x → 7.x attribute renames.
+
+    pysnmp 6.x: ``engine.msgAndPduDsp.mibInstrumController.mibBuilder``
+    pysnmp 7.x: ``engine.message_dispatcher.mib_instrum_controller.get_mib_builder()``
+
+    Returns the ``MibBuilder`` instance, or ``None`` if pysnmp's
+    internal layout has changed again (in which case the warm-up
+    silently no-ops and the first request does its own lookup —
+    better than crashing the integration).
+    """
+    try:
+        md = getattr(engine, "message_dispatcher", None) or engine.msgAndPduDsp
+        mic = getattr(md, "mib_instrum_controller", None) or md.mibInstrumController
+        # 7.x exposes a method, 6.x exposes a direct attribute.
+        if hasattr(mic, "get_mib_builder"):
+            return mic.get_mib_builder()
+        return mic.mibBuilder
+    except AttributeError:
+        return None
+
+
+def _warm_mib_cache(engine: SnmpEngine) -> None:
+    """Pre-load MIB-II modules the integration queries.
+
+    Called once per process inside ``asyncio.to_thread`` (off the HA
+    event loop). Tolerates any MIB module that's not shipped with this
+    pysnmp install — the OIDs are still queried by their numeric form
+    even if the textual label can't be resolved.
+
+    Runs synchronously and is expected to take ~50-200ms for the three
+    modules listed (one ``listdir`` + one ``open`` per module on cold
+    cache). After warm-up, every subsequent ``resolve_with_mib`` call
+    hits the in-memory cache and skips the FS scan.
+    """
+    mb = _get_mib_builder(engine)
+    if mb is None:
+        return
+    # Modules covering the OIDs we query:
+    # - SNMPv2-MIB: sysDescr (.1.3.6.1.2.1.1.1.0), sysUpTime (.1.3.6.1.2.1.1.3.0),
+    #               sysName, sysLocation, sysContact, ifInOctets/ifOutOctets via
+    #               IF-MIB
+    # - IF-MIB: ifInOctets / ifOutOctets per-channel (future walks)
+    # - RFC1213-MIB: same interface stats, legacy alias still in use by some devices
+    #
+    # Plus pysnmp's own protocol-internal MIBs that every request needs to
+    # fill in source-address / source-textual-convention fields:
+    # - PYSNMP-SOURCE-MIB: pysnmp source-address MIB (used in every request PDU)
+    # - PYSNMP-MIB: pysnmp's product MIB
+    # - SNMPv2-TM: SNMPv2 textual conventions for time stamps (used by request FSM)
+    # - SNMP-TARGET-MIB: required by pysnmp's set_user_context path on every request
+    # - TRANSPORT-ADDRESS-MIB: required by pysnmp's transportAddress resolution
+    for module in (
+        "SNMPv2-MIB",
+        "IF-MIB",
+        "RFC1213-MIB",
+        "PYSNMP-SOURCE-MIB",
+        "PYSNMP-MIB",
+        "SNMPv2-TM",
+        "SNMP-TARGET-MIB",
+        "TRANSPORT-ADDRESS-MIB",
+    ):
+        try:
+            mb.importSymbols(module)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("MIB warm-up: %s import skipped (%s)", module, exc)
 
 
 # ---- Runtime pysnmp-API detection ----

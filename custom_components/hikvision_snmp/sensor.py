@@ -26,6 +26,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     PERCENTAGE,
+    UnitOfFrequency,
     UnitOfInformation,
     UnitOfTemperature,
     UnitOfTime,
@@ -174,7 +175,11 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     HikvisionSensorDescription(
         key="cpu_freq",
         name="CPU Frequency",
-        native_unit_of_measurement=UnitOfInformation.MEGAHERTZ,
+        # HA 2024 deprecated `UnitOfInformation.MEGAHERTZ` (megahertz is a
+        # frequency, not an information/data unit). HA 2025.1 removed the
+        # deprecated alias entirely. Use the proper ``UnitOfFrequency`` enum
+        # instead. The "MHz" string value is identical.
+        native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: parse_value_with_unit(_scalar("cpu_freq")(d))[0],
     ),

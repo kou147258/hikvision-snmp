@@ -481,3 +481,254 @@ def test_module_does_not_eagerly_import_camelcase_cmd_names():
     assert callable(get)
     assert callable(bulk)
     assert callable(nxt)
+
+
+# ---- v0.1.15 — MIB cache warm-up + pysnmp 6.x/7.x MIBBuilder access ----
+#
+# The blocking-call detector in HA flags every pysnmp ``os.listdir`` /
+# ``open`` against ``<pysnmp>/smi/mibs/`` that happens on the event loop.
+# Two such calls happen:
+#
+# 1. Inside ``SnmpEngine.__init__`` (already mitigated by v0.1.12 —
+#    ``SnmpEngine()`` is lazy + constructed in ``asyncio.to_thread``).
+# 2. On every ``getCmd`` / ``bulkCmd`` / ``nextCmd`` call when the engine
+#    resolves OIDs to symbols — pysnmp's MIB builder walks its
+#    ``DirMibSource._getData`` to find which ``.py`` files in the MIB
+#    directory contain the requested symbols.
+#
+# v0.1.15 pre-loads the standard MIB-II modules the integration queries
+# (SNMPv2-MIB, IF-MIB, RFC1213-MIB) plus pysnmp's own protocol-internal
+# MIBs (PYSNMP-SOURCE-MIB, PYSNMP-MIB, SNMPv2-TM, SNMP-TARGET-MIB,
+# TRANSPORT-ADDRESS-MIB) inside ``_get_shared_engine``. After the
+# warm-up, every subsequent OID resolution hits the in-memory
+# ``MibBuilder.mibSymbols`` cache, not the FS scanner — so the first
+# ``getCmd`` only triggers one transient ``listdir`` for pysnmp's
+# internal PDU fields, and every later request hits zero listdir calls.
+#
+# The MIB builder itself moved across pysnmp major versions:
+#
+# - pysnmp 6.x: ``engine.msgAndPduDsp.mibInstrumController.mibBuilder``
+# - pysnmp 7.x: ``engine.message_dispatcher.mib_instrum_controller
+#                .get_mib_builder()``
+#
+# ``_get_mib_builder`` uses ``getattr`` fallback so both paths work.
+
+
+class _FakeMibBuilder:
+    """Captures every ``importSymbols`` call the warm-up makes."""
+
+    def __init__(self):
+        self.imported: list[tuple] = []
+
+    def importSymbols(self, *names):
+        # Accept either the legacy (module,) form or the
+        # (module, symbol1, symbol2, ...) form.
+        self.imported.append(names)
+        # Pretend each module "exists" with one fake symbol so the
+        # warm-up loop doesn't bail out on missing-module errors.
+        module = names[0]
+        return {f"{module}::fakeSymbol": type("Sym", (), {"name": (module, "fakeSymbol")})()}
+
+
+class _FakeMibInstrumControllerV6:
+    """pysnmp 6.x layout: ``mibInstrumController.mibBuilder`` is a direct attribute."""
+    def __init__(self):
+        self.mibBuilder = _FakeMibBuilder()
+
+
+class _FakeMessageDispatcherV6:
+    """pysnmp 6.x layout: ``msgAndPduDsp.mibInstrumController.mibBuilder``."""
+    def __init__(self):
+        self.mibInstrumController = _FakeMibInstrumControllerV6()
+
+
+class _FakeEngineV6:
+    """pysnmp 6.x engine with the legacy attribute layout."""
+    def __init__(self):
+        self.msgAndPduDsp = _FakeMessageDispatcherV6()
+
+
+class _FakeMibInstrumControllerV7:
+    """pysnmp 7.x layout: ``mib_instrum_controller.get_mib_builder()`` is a method."""
+    def __init__(self):
+        self._builder = _FakeMibBuilder()
+
+    def get_mib_builder(self):
+        return self._builder
+
+
+class _FakeMessageDispatcherV7:
+    """pysnmp 7.x layout: ``message_dispatcher.mib_instrum_controller.get_mib_builder()``."""
+    def __init__(self):
+        self.mib_instrum_controller = _FakeMibInstrumControllerV7()
+
+
+class _FakeEngineV7:
+    """pysnmp 7.x engine with the renamed attribute layout."""
+    def __init__(self):
+        self.message_dispatcher = _FakeMessageDispatcherV7()
+
+
+def test_get_mib_builder_uses_v6_legacy_attribute_path():
+    """``_get_mib_builder`` returns the builder via ``msgAndPduDsp.mibInstrumController.mibBuilder``.
+
+    The pysnmp 6.x path. Verified with a stub engine whose ``msgAndPduDsp``
+    attribute is the camelCase layout.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    engine = _FakeEngineV6()
+    builder = client_mod._get_mib_builder(engine)
+    assert builder is engine.msgAndPduDsp.mibInstrumController.mibBuilder
+
+
+def test_get_mib_builder_uses_v7_renamed_method_path():
+    """``_get_mib_builder`` returns the builder via ``message_dispatcher.mib_instrum_controller.get_mib_builder()``.
+
+    The pysnmp 7.x path. Verified with a stub engine whose
+    ``message_dispatcher`` attribute is the snake_case layout.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    engine = _FakeEngineV7()
+    builder = client_mod._get_mib_builder(engine)
+    assert builder is engine.message_dispatcher.mib_instrum_controller.get_mib_builder()
+
+
+def test_get_mib_builder_returns_none_when_layout_unrecognised():
+    """``_get_mib_builder`` returns ``None`` if pysnmp renames its layout again.
+
+    The warm-up code paths check for ``None`` and silently no-op — better
+    than crashing the integration on first request. A future pysnmp 8.x
+    will surface here first; the test would fail and tell the next
+    maintainer exactly where to extend the dispatch.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class EmptyEngine:
+        pass
+
+    assert client_mod._get_mib_builder(EmptyEngine()) is None
+
+
+def test_warm_mib_cache_calls_importSymbols_for_each_module():
+    """``_warm_mib_cache`` invokes ``MibBuilder.importSymbols`` for each MIB module.
+
+    The exact module list is documented in the warm-up docstring — these
+    cover both the OIDs the integration queries (``SNMPv2-MIB``,
+    ``IF-MIB``, ``RFC1213-MIB``) and the protocol-internal MIBs pysnmp
+    needs to fill in source-address / source-textual-convention fields on
+    every request (``PYSNMP-SOURCE-MIB``, ``PYSNMP-MIB``, ``SNMPv2-TM``,
+    ``SNMP-TARGET-MIB``, ``TRANSPORT-ADDRESS-MIB``).
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    engine = _FakeEngineV6()
+    client_mod._warm_mib_cache(engine)
+    builder = engine.msgAndPduDsp.mibInstrumController.mibBuilder
+    imported_modules = {names[0] for names in builder.imported}
+    # The integration queries these directly via sysDescr / sysUpTime /
+    # ifInOctets / ifOutOctets.
+    assert "SNMPv2-MIB" in imported_modules
+    assert "IF-MIB" in imported_modules
+    assert "RFC1213-MIB" in imported_modules
+    # pysnmp itself needs these for every request PDU.
+    assert "PYSNMP-SOURCE-MIB" in imported_modules
+    assert "PYSNMP-MIB" in imported_modules
+    assert "SNMPv2-TM" in imported_modules
+    assert "SNMP-TARGET-MIB" in imported_modules
+    assert "TRANSPORT-ADDRESS-MIB" in imported_modules
+
+
+def test_warm_mib_cache_no_ops_when_mib_builder_unavailable():
+    """``_warm_mib_cache`` silently no-ops when pysnmp's MIBBuilder isn't where we expect.
+
+    Better than crashing the engine build — the first request will then
+    do its own ``importSymbols`` lookup, which is the pre-v0.1.15
+    behaviour. This is a defensive guard for any future pysnmp major
+    release that restructures its engine internals.
+    """
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    class EmptyEngine:
+        pass
+
+    # Should not raise — just no-ops.
+    client_mod._warm_mib_cache(EmptyEngine())
+
+
+def test_get_shared_engine_warms_mib_cache_in_to_thread():
+    """``_get_shared_engine`` runs the MIB warm-up inside the same ``asyncio.to_thread`` call as ``SnmpEngine()``.
+
+    The point of v0.1.15's warm-up is that every ``os.listdir`` /
+    ``open`` pysnmp does to load MIB modules happens off the HA event
+    loop, not on it. If this test ever fails because the warm-up was
+    moved out of ``_build_engine_and_warm_mibs``, HA's blocking-call
+    detector will start firing warnings on every integration start.
+    """
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    _reset_engine_singleton()
+
+    warm_called_inside_to_thread: list[bool] = []
+
+    class FakeEngine:
+        def __init__(self):
+            # Use the v6 layout so ``_get_mib_builder`` resolves.
+            self.msgAndPduDsp = _FakeMessageDispatcherV6()
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        # If the warm-up is inside this func, calling func here triggers it.
+        result = func(*args, **kwargs)
+        # Inspect builder state AFTER func ran inside the thread.
+        warm_called_inside_to_thread.append(
+            len(result.msgAndPduDsp.mibInstrumController.mibBuilder.imported) > 0
+        )
+        return result
+
+    async def driver():
+        with patch.object(client_mod, "SnmpEngine", FakeEngine):
+            with patch.object(_asyncio, "to_thread", side_effect=fake_to_thread):
+                return await client_mod._get_shared_engine()
+
+    engine = _asyncio.run(driver())
+    assert warm_called_inside_to_thread == [True]
+    assert isinstance(engine, FakeEngine)
+    # The builder's import list should have one entry per warm-up module.
+    builder = engine.msgAndPduDsp.mibInstrumController.mibBuilder
+    assert len(builder.imported) >= 8  # 3 MIB-II + 5 pysnmp internal
+
+
+def test_get_shared_engine_returns_cached_singleton_on_second_call():
+    """``_get_shared_engine`` returns the cached singleton without rebuilding on subsequent calls.
+
+    Without this guard, the warm-up would re-run on every Hikvision
+    device the user adds (and on every reload of the entry), re-doing
+    8+ MIB listdir/open pairs on the worker thread each time. The
+    singleton + lock pattern keeps the cost to one process-lifetime.
+    """
+    from unittest.mock import patch
+
+    import custom_components.hikvision_snmp.snmp_client as client_mod
+
+    _reset_engine_singleton()
+
+    build_count = [0]
+
+    class FakeEngine:
+        def __init__(self):
+            self.msgAndPduDsp = _FakeMessageDispatcherV6()
+            build_count[0] += 1
+
+    async def driver():
+        with patch.object(client_mod, "SnmpEngine", FakeEngine):
+            e1 = await client_mod._get_shared_engine()
+            e2 = await client_mod._get_shared_engine()
+            e3 = await client_mod._get_shared_engine()
+            return e1, e2, e3
+
+    e1, e2, e3 = _asyncio.run(driver())
+    assert e1 is e2 is e3  # same instance every time
+    assert build_count[0] == 1  # built exactly once, not three times
