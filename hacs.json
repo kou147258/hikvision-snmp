@@ -1,0 +1,5 @@
+{
+  "name": "Hikvision SNMP",
+  "render_readme": true,
+  "country": ["CN"]
+}
