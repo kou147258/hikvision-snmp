@@ -12,9 +12,12 @@ expects, and is what the standard config-flow template generates.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
+
+_LOGGER = logging.getLogger(__name__)
 
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -93,11 +96,16 @@ def _snmp_data_schema(version: str) -> vol.Schema:
 
 
 async def _test_connection(host: str, port: int, version: str, auth: dict) -> tuple[str | None, str]:
-    """Returns ``(sysDescr, vendor)`` on success, ``(None, "")`` on failure.
+    """Returns ``(sysDescr, vendor)`` on success, ``(None, "")`` on any failure.
 
     Tries Hikvision IPC MIB (``.39165.1.1.0`` = model) first; if that fails,
     falls back to NVR MIB (``.50001.1.3.0`` = serial). Returns the resolved
     sysDescr string and the vendor identifier.
+
+    All exceptions are caught and turned into a ``(None, "")`` result so
+    that the config flow surfaces the proper ``cannot_connect`` error
+    instead of HA's generic ``Unknown error occurred`` (which fires when
+    the flow manager catches an unhandled exception).
     """
     from .const import (
         HIKVISION_NVR_MIB_ROOT,
@@ -105,7 +113,12 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
         VENDOR_HIKVISION_NVR,
     )
 
-    client = HikvisionSnmpClient(host=host, port=port, version=version, auth=auth)
+    try:
+        client = HikvisionSnmpClient(host=host, port=port, version=version, auth=auth)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("SNMP client construction failed for %s:%s: %s", host, port, exc)
+        return None, ""
+
     try:
         # Try IPC root first
         for ipc_oid in (f"{HIKVISION_IPC_MIB_ROOT}.1.1.0", f"{HIKVISION_IPC_MIB_ROOT}.1.1.1.1.0"):
@@ -115,6 +128,9 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
                     return str(val), VENDOR_HIKVISION_IPC
             except HikvisionSnmpError:
                 continue
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("IPC probe %s failed: %s", ipc_oid, exc)
+                continue
         # Fall back to NVR root
         try:
             val = await client.get(f"{HIKVISION_NVR_MIB_ROOT}.1.3.0")
@@ -122,8 +138,16 @@ async def _test_connection(host: str, port: int, version: str, auth: dict) -> tu
                 return str(val), VENDOR_HIKVISION_NVR
         except HikvisionSnmpError:
             pass
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("NVR probe failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("Unexpected error in _test_connection(%s:%s): %s", host, port, exc)
+        return None, ""
     finally:
-        await client.close()
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
     return None, ""
 
 
