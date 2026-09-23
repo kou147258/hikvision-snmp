@@ -119,7 +119,7 @@ async def main() -> int:
             elif err_stat:
                 print(f"[probe] RFC1213 error_status: {err_stat.prettyPrint()}")
             else:
-                std_val = _decode_value(std_vbs[0][1])
+                std_val = decode_value(std_vbs[0][1])
                 print(f"[probe] RFC1213 sysDescr: {decode_octet_string(std_val)!r}")
                 if std_val is None:
                     print(f"[probe]   (raw value type: {type(std_vbs[0][1]).__name__})")
@@ -138,7 +138,7 @@ async def main() -> int:
             elif err_stat:
                 print(f"[probe] Hikvision error_status: {err_stat.prettyPrint()}")
                 return 1
-            hik_val = _decode_value(hik_vbs[0][1])
+            hik_val = decode_value(hik_vbs[0][1])
             print(f"[probe] Hikvision sysDescr: {decode_octet_string(hik_val)!r}")
             print(f"[probe]   (raw value type: {type(hik_vbs[0][1]).__name__})")
         except Exception as exc:  # noqa: BLE001
