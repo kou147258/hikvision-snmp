@@ -101,6 +101,7 @@ class HikvisionOnlineBinarySensor(_Base):
         3. ``coordinator.last_update_success`` as a final fallback.
     """
 
+    _attr_name = "在线状态"
     _attr_translation_key = "online"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
@@ -142,6 +143,7 @@ class HikvisionRecordingBinarySensor(_Base):
            level indicator available in the 50001 MIB).
     """
 
+    _attr_name = "录像状态"
     _attr_translation_key = "recording"
 
     def __init__(
