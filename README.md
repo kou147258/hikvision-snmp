@@ -1,5 +1,11 @@
 # Hikvision SNMP
 
+<p align="right">
+  🌐 <a href="#english"><b>English</b></a> · <a href="#简体中文">简体中文</a>
+</p>
+
+<a name="english"></a>
+
 A Home Assistant custom component that monitors Hikvision NVRs and standalone IPCs over SNMP v2c or v3 — read-only sensors for device health (CPU, memory, temperature, uptime, firmware), per-channel status, and disk / SD-card state.
 
 Two product lines are supported transparently via auto-detect:
@@ -177,7 +183,13 @@ MIT © 2026 43457. See `LICENSE`.
 
 ---
 
-## 简体中文
+<a name="简体中文"></a>
+
+<p align="right">
+  🌐 <a href="#english">English</a> · <a href="#简体中文"><b>简体中文</b></a>
+</p>
+
+# Hikvision SNMP（简体中文）
 
 一个用于监控海康威视 NVR 和独立 IPC 的 Home Assistant 自定义集成，通过 SNMP v2c 或 v3 通信。只读 sensor，监控设备健康（CPU、内存、温度、运行时长、固件版本）、每通道状态、磁盘 / SD 卡状态。
 
