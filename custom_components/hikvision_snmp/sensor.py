@@ -340,6 +340,24 @@ class HikvisionSensor(
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
+        # v0.1.17 — explicitly set ``_attr_translation_key`` on the
+        # entity instance, not just on entity_description. HA Core's
+        # ``Entity.name`` property reads ``_attr_name`` first, then
+        # ``entity_description.name``. When both are None, HA's frontend
+        # falls back to ``registry.translation_key`` (set at registration
+        # time from ``entity_description.translation_key``), but the
+        # cached_property chain only checks the entity instance
+        # attributes — the registry translation_key is only consulted
+        # when ``Entity.name`` returns None, and we want to avoid the
+        # ambiguity entirely. Setting ``_attr_translation_key``
+        # explicitly on the instance guarantees HA's frontend picks
+        # up our translation_key regardless of which code path it
+        # takes through the entity name resolution.
+        self._attr_translation_key = description.translation_key
+        # Also clear ``_attr_name`` to None so HA's name fallback chain
+        # doesn't accidentally hit a stale ``description.name`` value
+        # from a pre-v0.1.17 entity_description that still had a name.
+        self._attr_name = None
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = coordinator.device_info
 
@@ -370,13 +388,32 @@ class _DynamicTableSensor(
         super().__init__(coordinator)
         self._idx = idx
         self._metric_key = metric_key
-        # Prefer translation_key (HA picks the user's-locale translation
-        # from translations/<lang>.json when available, otherwise falls
-        # back to the hardcoded ``name_suffix``). This lets en/zh users
-        # both see the right name without us hardcoding two parallel
-        # ``HikvisionSensorDescription`` variants.
+        # v0.1.17 — explicit translation_key on the instance + clear
+        # ``_attr_name``. Pre-v0.1.17 the constructor set both
+        # ``_attr_translation_key`` AND ``_attr_name = name_suffix``;
+        # HA Core's ``Entity.name`` cached_property reads ``_attr_name``
+        # first and short-circuits the translation lookup, which meant
+        # the per-channel / per-disk entities (Channel Label, Motion,
+        # Disk Name, etc.) always showed the English ``name_suffix``
+        # even on zh-locale installs.
+        #
+        # We keep ``name_suffix`` around as a fallback for locales
+        # that don't have a translation file — HA's frontend will use
+        # the translated name when present and fall back to the
+        # original_name / entity_description.name otherwise.
         self._attr_translation_key = translation_key
-        self._attr_name = name_suffix
+        self._attr_name = None
+        # Store the English fallback in entity_description.name so HA's
+        # entity_registry uses it as ``original_name`` (the name shown
+        # when the user's locale doesn't have a matching translation
+        # entry). The translation_key + entity_description.name combo
+        # is the canonical pattern recommended by HA Core.
+        self.entity_description = HikvisionSensorDescription(
+            key=f"{self._table_name}_{idx}_{metric_key}",
+            name=name_suffix,
+            translation_key=translation_key,
+            native_unit_of_measurement=unit,
+        )
         self._attr_native_unit_of_measurement = unit
         self._attr_unique_id = f"{entry.entry_id}_{self._table_name}_{idx}_{metric_key}"
         self._attr_device_info = coordinator.device_info

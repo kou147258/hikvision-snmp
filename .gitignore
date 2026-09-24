@@ -37,3 +37,6 @@ secrets.local.yaml
 # HA runtime
 .deps/
 home-assistant.log
+
+# gh CLI runtime (local auth cache, device id, oauth token)
+.local/

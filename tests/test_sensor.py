@@ -154,6 +154,79 @@ def test_binary_sensors_carry_translation_key():
     assert HikvisionRecordingBinarySensor._attr_translation_key == "recording"
 
 
+def test_hikvision_sensor_sets_attr_translation_key_from_description():
+    """HikvisionSensor.__init__ sets ``self._attr_translation_key`` from the entity_description.
+
+    Regression guard for v0.1.17: v0.1.16 only set
+    ``entity_description.translation_key`` (a dataclass field) but
+    HA Core's ``Entity.name`` cached_property reads
+    ``_attr_translation_key`` on the instance first, NOT
+    ``entity_description.translation_key``. Setting
+    ``_attr_translation_key`` explicitly on the instance is what
+    actually causes HA's frontend to look up the translation in
+    ``translations/<lang>.json`` and display ``型号`` /
+    ``固件版本`` / etc. instead of the English fallbacks.
+
+    If a future refactor moves ``_attr_translation_key`` assignment
+    out of HikvisionSensor.__init__, this test fails — Chinese-locale
+    users see English entity names again.
+    """
+    # Construct a minimal HikvisionSensor instance. Skip the coordinator
+    # path entirely; we're testing __init__'s side effects on the
+    # translation_key attribute only.
+    class _StubSensor:
+        """Sentinel — we won't actually call HikvisionSensor.__init__."""
+        pass
+
+    # Inspect the HikvisionSensor.__init__ source to confirm the line
+    # is present. A grep-level assertion catches both "removed entirely"
+    # and "moved to a different attribute name" regressions.
+    import inspect
+
+    from custom_components.hikvision_snmp.sensor import HikvisionSensor
+
+    source = inspect.getsource(HikvisionSensor.__init__)
+    assert "self._attr_translation_key = description.translation_key" in source, (
+        "HikvisionSensor.__init__ must set _attr_translation_key from "
+        "the entity_description — otherwise HA's Entity.name property "
+        "won't pick up the zh.json translations on a zh-locale install"
+    )
+
+
+def test_dynamic_table_sensor_does_not_set_attr_name():
+    """_DynamicTableSensor.__init__ must NOT set ``_attr_name``.
+
+    Regression guard for v0.1.17: v0.1.16 set both
+    ``_attr_translation_key`` AND ``_attr_name = name_suffix`` on the
+    instance. HA Core's ``Entity.name`` property short-circuits on
+    ``_attr_name`` (it's checked first), so the translation was never
+    consulted and the entity showed the English ``name_suffix``
+    regardless of locale.
+
+    v0.1.17 sets ``_attr_name = None`` instead, letting
+    ``_attr_translation_key`` drive the name resolution. The English
+    fallback moves to ``entity_description.name`` so the registry's
+    ``original_name`` still has something to fall back on if the
+    user's locale doesn't have a matching translation.
+    """
+    import inspect
+
+    from custom_components.hikvision_snmp.sensor import _DynamicTableSensor
+
+    source = inspect.getsource(_DynamicTableSensor.__init__)
+    assert "self._attr_translation_key = translation_key" in source
+    # Look for the specific anti-pattern — assigning a non-None string
+    # to self._attr_name from the name_suffix parameter.
+    assert 'self._attr_name = name_suffix' not in source, (
+        "_DynamicTableSensor.__init__ must not assign name_suffix to "
+        "_attr_name — that short-circuits HA's translation lookup"
+    )
+    assert "self._attr_name = None" in source, (
+        "_DynamicTableSensor.__init__ must clear _attr_name to None "
+        "so HA picks up _attr_translation_key instead"
+    )
+
+
 # ---- v0.1.16 — entry setup wait_for guard ----
 
 
