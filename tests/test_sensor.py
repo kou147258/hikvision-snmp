@@ -238,12 +238,22 @@ class _FakeCoordinator:
         # Set this to delay async_config_entry_first_refresh (simulating
         # a slow Hikvision V5.x NVR with many channels).
         self._delay_seconds = 0
+        # v0.1.23 — list of listeners registered via async_add_listener.
+        # Real DataUpdateCoordinator fires these after every successful
+        # update; for tests we just store them so the test can decide
+        # whether to fire them.
+        self._listeners: list = []
 
     @property
     def client(self):
         class _C:
             host = self._host
         return _C()
+
+    def async_add_listener(self, listener):
+        """Record a listener (no-op in tests unless test fires it)."""
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
 
     async def async_config_entry_first_refresh(self):
         self.refresh_called += 1
@@ -351,6 +361,76 @@ async def test_binary_sensor_setup_does_not_wait_for_first_refresh():
         f"binary_sensor async_setup_entry took {elapsed:.2f}s — should be near-instant"
     )
     assert coordinator.refresh_called == 0
+
+
+# ---- v0.1.23 — per-channel / per-disk entities are added after first poll ----
+
+
+@pytest.mark.asyncio
+async def test_dynamic_entities_added_after_first_poll():
+    """v0.1.23 — per-channel / per-disk entities are added by the
+    coordinator listener after the first poll completes.
+
+    Pre-v0.1.23: if the first poll exceeded the entity_platform setup
+    budget, per-channel / per-disk entities were never created (they
+    iterated over ``coordinator.data`` which was empty at setup time).
+    The user had to reload the integration to get them.
+
+    v0.1.23: ``async_setup_entry`` registers a one-shot coordinator
+    listener that adds per-channel / per-disk entities as soon as the
+    coordinator's data is populated. The listener is idempotent (it
+    uses a flag on the coordinator to be a no-op on subsequent fires).
+    """
+    import custom_components.hikvision_snmp.sensor as sensor_mod
+
+    coordinator = _FakeCoordinator()
+    coordinator.data = None  # first poll hasn't run yet at setup time
+    hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
+
+    # Capture the listener that async_setup_entry registers so we can
+    # fire it manually to simulate the first poll completing.
+    listener_ref: list = []
+    real_add_listener = coordinator.async_add_listener
+
+    def capture_listener(listener):
+        listener_ref.append(listener)
+        return real_add_listener(listener)
+
+    coordinator.async_add_listener = capture_listener
+
+    await sensor_mod.async_setup_entry(hass, entry, add_entities)
+
+    # After setup, the listener should be registered.
+    assert len(listener_ref) == 1
+    listener = listener_ref[0]
+
+    # The listener is a no-op while data is None.
+    await listener()
+    assert coordinator._hikvision_dynamic_entities_added is False
+
+    # Simulate the first poll completing — the coordinator's data is
+    # populated and the listener fires.
+    coordinator.data = {
+        "identification": {},
+        "channels": {
+            "name": {"1": "channel 1", "2": "channel 2"},
+            "label": {"1": "channel 1", "2": "channel 2"},
+            "motion_flag": {"1": 0, "2": 0},
+            "sub_stream_size": {"1": 0, "2": 0},
+            "bytes_used": {"1": 0, "2": 0},
+        },
+        "disks": {
+            "name": {"1": "disk 1"},
+            "capacity": {"1": 100},
+        },
+    }
+    await listener()
+    assert coordinator._hikvision_dynamic_entities_added is True
+
+    # Re-firing the listener is a no-op (idempotent).
+    flag_before = coordinator._hikvision_dynamic_entities_added
+    await listener()
+    assert coordinator._hikvision_dynamic_entities_added is flag_before
 
 
 # ---- v0.1.16 — translations files are valid JSON ----

@@ -317,112 +317,187 @@ async def async_setup_entry(
     """Set up sensors from a config entry."""
     coordinator: HikvisionDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # v0.1.22 — do NOT wait for the coordinator's first refresh here.
-    # On Hikvision V5.x firmware under load (active video streaming /
-    # recording), the SNMP daemon is starved by the video pipeline and
-    # the first poll (system walk + channel walk + disk walk) can take
-    # 15-30 s. The v0.1.16 ``wait_for(15)`` guard capped that wait and
-    # logged a warning, but it still held the entity_platform setup
-    # open for up to 15 s — which triggers HA's own "Setup of X platform
-    # is taking over 10 seconds" warning. The right behaviour is to
-    # register the entities immediately and let the coordinator's
-    # normal 10 s poll cycle populate the data. The entities will be
-    # ``unavailable`` for at most one poll interval after entry setup.
+    # v0.1.23 — split entity creation into system (immediate) and
+    # per-channel/per-disk (deferred until first poll). The v0.1.22
+    # design registered all entities in the initial pass, but
+    # per-channel / per-disk entity creation depends on
+    # ``coordinator.data`` being populated, which doesn't happen
+    # until the first successful poll completes. On busy V5.x devices
+    # where the first poll exceeds 10 s (or fails entirely), the
+    # per-channel / per-disk entities would be skipped during the
+    # initial pass.
     #
-    # The one trade-off: per-channel and per-disk entity creation
-    # depends on ``coordinator.data`` being populated (it carries the
-    # walk results), which only happens after a successful refresh. On
-    # busy devices where the first poll exceeds 10 s, the per-channel
-    # / per-disk entities are NOT created during the initial setup
-    # pass — they appear after a reload. The system OID sensors (model,
-    # CPU, memory, IP, etc.) are always created because they don't
-    # depend on data.
+    # v0.1.23 fixes this by registering the system entities
+    # immediately (model, CPU, memory, IP, etc. — these don't depend
+    # on data) and deferring the per-channel / per-disk entities to a
+    # coordinator listener that fires after the first successful
+    # refresh. The listener is idempotent — it only adds entities
+    # once per (entry, channel/disk index) so re-fires on subsequent
+    # polls are no-ops.
 
-    data = coordinator.data or {}
-
-    entities: list[SensorEntity] = []
-
-    # Vendor-aware scalar sensors
+    # ---- Phase 1: register system entities (no data dependency) ----
+    system_entities: list[SensorEntity] = []
     if coordinator.vendor == VENDOR_HIKVISION_NVR:
         for desc in NVR_SENSORS:
-            entities.append(HikvisionSensor(coordinator, entry, desc))
+            system_entities.append(HikvisionSensor(coordinator, entry, desc))
     else:
         for desc in IPC_SENSORS:
-            entities.append(HikvisionSensor(coordinator, entry, desc))
+            system_entities.append(HikvisionSensor(coordinator, entry, desc))
+    async_add_entities(system_entities)
 
-    # Per-channel sensors — vendor-aware shape
+    # v0.1.20 — force entity_registry to re-derive entity names from
+    # ``translation_key`` by clearing the cached ``name`` field on every
+    # system entity. The same hook is applied to dynamic entities (in
+    # ``_maybe_add_dynamic_entities``) when they get added later.
+    from homeassistant.helpers import entity_registry as _er
+
+    registry = _er.async_get(hass)
+    for entity in system_entities:
+        try:
+            if entity.entity_id:
+                registry.async_update_entity(entity.entity_id, name=None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---- Phase 2: best-effort per-channel / per-disk from current data ----
+    # If the coordinator's first poll already completed (race), we
+    # already have data — register those entities now.
+    _maybe_add_dynamic_entities(
+        hass, entry, coordinator, async_add_entities
+    )
+
+    # ---- Phase 3: register a coordinator listener for late data ----
+    # If the first poll hasn't completed yet, register a one-shot
+    # listener that adds per-channel / per-disk entities as soon as
+    # data is available. The listener is fired after every successful
+    # update, but uses a flag to be idempotent.
+    if not getattr(coordinator, "_hikvision_dynamic_entities_added", False):
+        coordinator._hikvision_dynamic_entities_added = False  # type: ignore[attr-defined]
+        coordinator.async_add_listener(
+            _make_listener(hass, entry, coordinator, async_add_entities)
+        )
+
+
+def _make_listener(
+    hass: HomeAssistant,
+    entry,
+    coordinator: "HikvisionDataUpdateCoordinator",
+    async_add_entities: AddEntitiesCallback,
+):
+    """Build a one-shot coordinator listener that adds per-channel /
+    per-disk entities the first time the coordinator's data is
+    populated.
+
+    The listener is invoked after every successful refresh. The flag
+    on the coordinator (``_hikvision_dynamic_entities_added``) ensures
+    it only does the registration work once.
+    """
+    async def _on_coordinator_update() -> None:
+        if getattr(coordinator, "_hikvision_dynamic_entities_added", False):
+            return
+        if coordinator.data is None:
+            return
+        _maybe_add_dynamic_entities(
+            hass, entry, coordinator, async_add_entities
+        )
+
+    return _on_coordinator_update
+
+
+def _maybe_add_dynamic_entities(
+    hass: HomeAssistant,
+    entry,
+    coordinator: "HikvisionDataUpdateCoordinator",
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Register per-channel + per-disk entities if coordinator.data is populated.
+
+    Idempotent — checks the ``_hikvision_dynamic_entities_added`` flag on
+    the coordinator and returns immediately if the previous pass
+    already added them. This lets both Phase 2 (immediate best-effort
+    from current data) and Phase 3 (deferred listener) call this
+    function without risk of duplicate entity registration.
+    """
+    if getattr(coordinator, "_hikvision_dynamic_entities_added", False):
+        return
+    if coordinator.data is None:
+        return
+    data = coordinator.data
+
+    dynamic: list[SensorEntity] = []
     channel_keys = data.get("channels", {}).get("name", {}).keys()
     for ch_idx in sorted(channel_keys, key=lambda x: int(x.split(".")[0])):
         if coordinator.vendor == VENDOR_HIKVISION_NVR:
-            entities.append(HikvisionNvrChannelSensor(
+            dynamic.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "label", "通道标签",
                 translation_key="nvr_channel_label",
             ))
-            entities.append(HikvisionNvrChannelSensor(
+            dynamic.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "motion_flag", "动态检测",
                 translation_key="nvr_channel_motion",
             ))
-            entities.append(HikvisionNvrChannelSensor(
+            dynamic.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "sub_stream_size", "子码流大小",
                 translation_key="nvr_channel_sub_stream_size",
                 unit=UnitOfInformation.KILOBITS_PER_SECOND,
             ))
-            entities.append(HikvisionNvrChannelSensor(
+            dynamic.append(HikvisionNvrChannelSensor(
                 coordinator, entry, ch_idx, "bytes_used", "已用字节",
                 translation_key="nvr_channel_bytes_used",
                 unit=UnitOfInformation.BYTES,
             ))
         else:
-            entities.append(HikvisionChannelSensor(
+            dynamic.append(HikvisionChannelSensor(
                 coordinator, entry, ch_idx, "name", "通道名称",
                 translation_key="ipc_channel_name",
             ))
-            entities.append(HikvisionChannelSensor(
+            dynamic.append(HikvisionChannelSensor(
                 coordinator, entry, ch_idx, "bitrate", "通道码率",
                 translation_key="ipc_channel_bitrate",
                 unit=UnitOfInformation.KILOBITS_PER_SECOND,
             ))
 
-    # Per-disk sensors (IPC SD card or NVR HDD via .3 table — IPC only)
     disk_keys = data.get("disks", {}).get("name", {}).keys()
     for disk_idx in sorted(disk_keys, key=lambda x: int(x.split(".")[0])):
-        entities.append(HikvisionDiskSensor(
+        dynamic.append(HikvisionDiskSensor(
             coordinator, entry, disk_idx, "name", "磁盘名称",
             translation_key="disk_name",
         ))
-        entities.append(HikvisionDiskSensor(
+        dynamic.append(HikvisionDiskSensor(
             coordinator, entry, disk_idx, "capacity", "磁盘容量",
             translation_key="disk_capacity",
             unit=UnitOfInformation.GIGABYTES,
         ))
 
-    async_add_entities(entities)
+    if not dynamic:
+        return
+
+    # Mark BEFORE async_add_entities — the listener fires the same
+    # callback structure so re-fires are short-circuited.
+    coordinator._hikvision_dynamic_entities_added = True  # type: ignore[attr-defined]
+    async_add_entities(dynamic)
 
     # v0.1.20 — force entity_registry to re-derive entity names from
-    # ``translation_key`` by clearing the cached ``name`` field. HA's
-    # frontend applies ``translation_key`` to the displayed name only
-    # when ``entity_registry.name`` is ``None`` (no user override) AND
-    # the entity's ``original_name`` field doesn't shadow the lookup.
-    # The v0.1.19 release set ``_attr_name = "Model"`` etc. (restoring
-    # the v0.1.14 behaviour of always showing an English suffix), which
-    # caused HA to use ``name`` directly instead of running the
-    # translation_key lookup — so even zh-locale HA installs continued
-    # to display English names. This post-setup hook clears the name
-    # override on every entity we just created, forcing HA's frontend
-    # to consult ``translation_key`` on the next render and display
-    # the user's locale's translation (e.g. "型号" for zh-locale users).
+    # ``translation_key`` by clearing the cached ``name`` field. See
+    # the comment above the original v0.1.20 call site for the full
+    # rationale. The same hook is needed for the dynamically-added
+    # per-channel / per-disk entities.
     from homeassistant.helpers import entity_registry as _er
 
     registry = _er.async_get(hass)
-    for entity in entities:
+    for entity in dynamic:
         try:
             if entity.entity_id:
                 registry.async_update_entity(entity.entity_id, name=None)
         except Exception:  # noqa: BLE001
-            # Best-effort — if the registry entry doesn't exist yet
-            # (race with HA's internal async_get_or_create) the next
-            # poll cycle will hit the same path.
             pass
+
+
+# Backwards-compat alias so the rest of the file can still call
+# _maybe_add_dynamic_entities with a simpler signature if needed.
+# (The split into a separate function lets the coordinator listener
+# and the immediate best-effort path share the registration logic.)
+_ = _maybe_add_dynamic_entities  # silence linter unused-import
 
 
 class HikvisionSensor(
