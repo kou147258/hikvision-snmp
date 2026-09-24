@@ -57,10 +57,27 @@ async def async_setup_entry(
     except Exception:  # noqa: BLE001
         raise
 
-    async_add_entities([
+    binary_entities = [
         HikvisionOnlineBinarySensor(coordinator, entry),
         HikvisionRecordingBinarySensor(coordinator, entry),
-    ])
+    ]
+    async_add_entities(binary_entities)
+
+    # v0.1.20 — same translation_key clearing as sensor.py. See
+    # sensor.py:async_setup_entry for the full rationale. HA's
+    # frontend only consults ``translation_key`` to display the
+    # entity name when ``entity_registry.name`` is ``None``; clearing
+    # the name override after registration forces the next render to
+    # use the user's locale's translation.
+    from homeassistant.helpers import entity_registry as _er
+
+    registry = _er.async_get(hass)
+    for entity in binary_entities:
+        try:
+            if entity.entity_id:
+                registry.async_update_entity(entity.entity_id, name=None)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _Base(

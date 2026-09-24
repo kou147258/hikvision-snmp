@@ -78,6 +78,32 @@ _install_stub("homeassistant.helpers.update_coordinator", {
     ),
     "UpdateFailed": type("UpdateFailed", (Exception,), {}),
 })
+# v0.1.20 — sensor.py:async_setup_entry calls
+# ``homeassistant.helpers.entity_registry.async_get(hass)`` followed by
+# ``registry.async_update_entity(entity_id, name=None)`` to clear the
+# cached name so HA's frontend can apply translation_key on the next
+# render. Stub it with a minimal class that records the calls and
+# returns success.
+_er_module = types.ModuleType("homeassistant.helpers.entity_registry")
+
+
+class _EntityRegistryStub:
+    """Minimal entity_registry stub for v0.1.20's post-setup clearing hook."""
+
+    def __init__(self):
+        self.updates: list[tuple] = []
+
+    def async_get(self, hass):  # noqa: ARG002 — matches real signature
+        return self
+
+    def async_update_entity(self, entity_id, **kwargs):
+        self.updates.append((entity_id, kwargs))
+        return True
+
+
+_er_module.async_get = lambda hass: _EntityRegistryStub()
+_er_module.async_update_entity = lambda entity_id, **kw: True
+sys.modules["homeassistant.helpers.entity_registry"] = _er_module
 _install_stub("homeassistant.components")
 _SENSOR_ENTITY_DESCRIPTION_FIELDS = (
     "key", "translation_key", "name", "icon", "device_class",

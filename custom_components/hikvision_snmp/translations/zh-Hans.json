@@ -1,0 +1,95 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "设备基本信息",
+        "description": "请填写海康设备的连接信息。",
+        "data": {
+          "name": "名称",
+          "host": "IP 地址",
+          "port": "端口",
+          "device_type": "设备类型"
+        }
+      },
+      "snmp": {
+        "title": "SNMP 凭证",
+        "description": "选择 SNMP 版本并填写凭证。",
+        "data": {
+          "version": "SNMP 版本",
+          "community": "Community (v2c)",
+          "username": "用户名 (v3)",
+          "auth_protocol": "认证协议 (v3)",
+          "auth_key": "认证密钥 (v3)",
+          "privacy_protocol": "加密协议 (v3)",
+          "privacy_key": "加密密钥 (v3)"
+        }
+      },
+      "confirm": {
+        "title": "确认",
+        "description": "正在连接 {host}…"
+      }
+    },
+    "error": {
+      "cannot_connect": "SNMP 连接失败,请检查 IP、端口和凭证。",
+      "no_data": "连接成功但设备未返回系统描述。",
+      "invalid_snmp_version": "凭证与所选版本不匹配。"
+    },
+    "abort": {
+      "already_configured": "此设备已被配置。"
+    }
+  },
+  "options": {
+    "flow_title": "{name} 选项",
+    "step": {
+      "init": {
+        "title": "轮询选项",
+        "data": {
+          "scan_interval": "轮询间隔(秒)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "model": {"name": "型号"},
+      "device_name": {"name": "设备名称"},
+      "firmware": {"name": "固件版本"},
+      "mac": {"name": "MAC 地址"},
+      "manufacturer": {"name": "制造商"},
+      "cpu": {"name": "CPU 使用率"},
+      "memory_used_pct": {"name": "内存使用率"},
+      "memory_total": {"name": "内存总量"},
+      "storage_total": {"name": "存储总量"},
+      "storage_used_pct": {"name": "存储使用率"},
+      "uptime_seconds": {"name": "运行时长"},
+      "device_time": {"name": "设备时间"},
+      "network_type": {"name": "网络类型"},
+      "subnet_mask": {"name": "子网掩码"},
+      "gateway": {"name": "默认网关"},
+      "video_codec_primary": {"name": "主码流编码"},
+      "video_codec_secondary": {"name": "副码流编码"},
+      "serial": {"name": "序列号"},
+      "ip_addr": {"name": "IP 地址"},
+      "trap_target": {"name": "Trap 目标"},
+      "cpu_freq": {"name": "CPU 频率"},
+      "temperature_or_load": {"name": "温度 / 负载"},
+      "traffic_or_iops": {"name": "流量 / IOPS"},
+      "channels_total": {"name": "通道总数"},
+      "active_state": {"name": "活动状态"},
+      "online_state": {"name": "在线状态"},
+      "nvr_channel_label": {"name": "通道标签"},
+      "nvr_channel_motion": {"name": "动态检测"},
+      "nvr_channel_sub_stream_size": {"name": "子码流大小"},
+      "nvr_channel_bytes_used": {"name": "已用字节"},
+      "ipc_channel_name": {"name": "通道名称"},
+      "ipc_channel_bitrate": {"name": "通道码率"},
+      "disk_name": {"name": "磁盘名称"},
+      "disk_capacity": {"name": "磁盘容量"}
+    },
+    "binary_sensor": {
+      "online": {"name": "在线状态"},
+      "recording": {"name": "录像状态"}
+    }
+  }
+}

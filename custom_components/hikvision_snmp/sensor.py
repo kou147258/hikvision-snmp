@@ -347,9 +347,6 @@ async def async_setup_entry(
 
     # Per-channel sensors — vendor-aware shape
     channel_keys = data.get("channels", {}).get("name", {}).keys()
-    # NVR channels live in the .241.1 sub-table, so the row index in
-    # `channels` here is the full dotted instance (e.g. "1.0" or just "1"
-    # depending on decode_walk_results trailing-component handling).
     for ch_idx in sorted(channel_keys, key=lambda x: int(x.split(".")[0])):
         if coordinator.vendor == VENDOR_HIKVISION_NVR:
             entities.append(HikvisionNvrChannelSensor(
@@ -395,6 +392,32 @@ async def async_setup_entry(
         ))
 
     async_add_entities(entities)
+
+    # v0.1.20 — force entity_registry to re-derive entity names from
+    # ``translation_key`` by clearing the cached ``name`` field. HA's
+    # frontend applies ``translation_key`` to the displayed name only
+    # when ``entity_registry.name`` is ``None`` (no user override) AND
+    # the entity's ``original_name`` field doesn't shadow the lookup.
+    # The v0.1.19 release set ``_attr_name = "Model"`` etc. (restoring
+    # the v0.1.14 behaviour of always showing an English suffix), which
+    # caused HA to use ``name`` directly instead of running the
+    # translation_key lookup — so even zh-locale HA installs continued
+    # to display English names. This post-setup hook clears the name
+    # override on every entity we just created, forcing HA's frontend
+    # to consult ``translation_key`` on the next render and display
+    # the user's locale's translation (e.g. "型号" for zh-locale users).
+    from homeassistant.helpers import entity_registry as _er
+
+    registry = _er.async_get(hass)
+    for entity in entities:
+        try:
+            if entity.entity_id:
+                registry.async_update_entity(entity.entity_id, name=None)
+        except Exception:  # noqa: BLE001
+            # Best-effort — if the registry entry doesn't exist yet
+            # (race with HA's internal async_get_or_create) the next
+            # poll cycle will hit the same path.
+            pass
 
 
 class HikvisionSensor(
