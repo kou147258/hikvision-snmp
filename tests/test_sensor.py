@@ -193,7 +193,7 @@ def test_hikvision_sensor_sets_attr_translation_key_from_description():
     )
 
 
-def test_dynamic_table_sensor_does_not_set_attr_name():
+def test_dynamic_table_sensor_sets_attr_name_to_name_suffix():
     """_DynamicTableSensor.__init__ must NOT set ``_attr_name``.
 
     Regression guard for v0.1.17: v0.1.16 set both
@@ -215,15 +215,10 @@ def test_dynamic_table_sensor_does_not_set_attr_name():
 
     source = inspect.getsource(_DynamicTableSensor.__init__)
     assert "self._attr_translation_key = translation_key" in source
-    # Look for the specific anti-pattern — assigning a non-None string
-    # to self._attr_name from the name_suffix parameter.
-    assert 'self._attr_name = name_suffix' not in source, (
-        "_DynamicTableSensor.__init__ must not assign name_suffix to "
-        "_attr_name — that short-circuits HA's translation lookup"
-    )
-    assert "self._attr_name = None" in source, (
-        "_DynamicTableSensor.__init__ must clear _attr_name to None "
-        "so HA picks up _attr_translation_key instead"
+    assert 'self._attr_name = name_suffix' in source, (
+        "_DynamicTableSensor.__init__ must set _attr_name to "
+        "name_suffix so per-channel / per-disk entities show a "
+        "meaningful suffix (HA Core short-circuits on _attr_name=None)"
     )
 
 

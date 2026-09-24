@@ -67,38 +67,51 @@ def _scalar(metric_key: str):
 # ---- IPC / PTZ scalar sensors (enterprise 39165) ----
 
 IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
+    # v0.1.19 — restored explicit ``name=`` on every entry. v0.1.17
+    # removed them to "let translation_key drive the name", but HA
+    # Core's ``Entity.name`` property short-circuits on a missing
+    # ``_attr_name`` and falls back to just the device name (no
+    # suffix at all). The ``_attr_name`` chain needs a non-None
+    # English fallback for the entity to display anything besides
+    # "ipc" / "NVR".
     HikvisionSensorDescription(
         key="model",
+        name="Model",
         translation_key="model",
         icon="mdi:information-outline",
         value_fn=lambda d: decode_octet_string(_scalar("model")(d)),
     ),
     HikvisionSensorDescription(
         key="device_name",
+        name="Device Name",
         translation_key="device_name",
         icon="mdi:tag-outline",
         value_fn=lambda d: decode_octet_string(_scalar("device_name")(d)),
     ),
     HikvisionSensorDescription(
         key="firmware",
+        name="Firmware Version",
         translation_key="firmware",
         icon="mdi:chip",
         value_fn=lambda d: decode_octet_string(_scalar("firmware")(d)),
     ),
     HikvisionSensorDescription(
         key="mac",
+        name="MAC Address",
         translation_key="mac",
         icon="mdi:network",
         value_fn=lambda d: decode_octet_string(_scalar("mac")(d)),
     ),
     HikvisionSensorDescription(
         key="manufacturer",
+        name="Manufacturer",
         translation_key="manufacturer",
         icon="mdi:factory",
         value_fn=lambda d: decode_octet_string(_scalar("manufacturer")(d)),
     ),
     HikvisionSensorDescription(
         key="cpu",
+        name="CPU Usage",
         translation_key="cpu",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -106,6 +119,7 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="memory_used_pct",
+        name="Memory Usage",
         translation_key="memory_used_pct",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -113,6 +127,7 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="memory_total",
+        name="Memory Total",
         translation_key="memory_total",
         native_unit_of_measurement=UnitOfInformation.MEGABYTES,
         state_class=SensorStateClass.MEASUREMENT,
@@ -120,6 +135,7 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="storage_total",
+        name="Storage Total",
         translation_key="storage_total",
         native_unit_of_measurement=UnitOfInformation.GIGABYTES,
         state_class=SensorStateClass.MEASUREMENT,
@@ -127,6 +143,7 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="storage_used_pct",
+        name="Storage Used",
         translation_key="storage_used_pct",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -134,6 +151,7 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="uptime_seconds",
+        name="Uptime",
         translation_key="uptime_seconds",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
@@ -142,12 +160,14 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="device_time",
+        name="Device Time",
         translation_key="device_time",
         icon="mdi:clock-outline",
         value_fn=lambda d: decode_octet_string(_scalar("device_time")(d)),
     ),
     HikvisionSensorDescription(
         key="network_type",
+        name="Network Type",
         translation_key="network_type",
         icon="mdi:lan",
         value_fn=lambda d: decode_octet_string(_scalar("network_type")(d)),
@@ -156,10 +176,9 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     # const.py: SYSTEM_OIDS since v0.1.0 but never mapped to a
     # HikvisionSensorDescription, so the integration queried them
     # via the system OID walk but never exposed them as entities.
-    # Reported by the maintainer after auditing the snmpwalk output
-    # against the running integration on real hardware.
     HikvisionSensorDescription(
         key="ip_addr",
+        name="IP Address",
         translation_key="ip_addr",
         icon="mdi:ip",
         # IpAddress from pysnmp; str() gives dotted notation.
@@ -167,24 +186,28 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="subnet_mask",
+        name="Subnet Mask",
         translation_key="subnet_mask",
         icon="mdi:subnet",
         value_fn=lambda d: str(_scalar("subnet_mask")(d)) if _scalar("subnet_mask")(d) else None,
     ),
     HikvisionSensorDescription(
         key="gateway",
+        name="Gateway",
         translation_key="gateway",
         icon="mdi:router-network",
         value_fn=lambda d: str(_scalar("gateway")(d)) if _scalar("gateway")(d) else None,
     ),
     HikvisionSensorDescription(
         key="video_codec_primary",
+        name="Primary Video Codec",
         translation_key="video_codec_primary",
         icon="mdi:video-high-definition",
         value_fn=lambda d: decode_octet_string(_scalar("video_codec_primary")(d)),
     ),
     HikvisionSensorDescription(
         key="video_codec_secondary",
+        name="Secondary Video Codec",
         translation_key="video_codec_secondary",
         icon="mdi:video-high-definition",
         value_fn=lambda d: decode_octet_string(_scalar("video_codec_secondary")(d)),
@@ -195,26 +218,34 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
 # ---- NVR scalar sensors (enterprise 50001) ----
 
 NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
+    # v0.1.19 — restored explicit ``name=`` on every entry. See the
+    # IPC_SENSORS comment above for the rationale — HA Core 2026.x
+    # short-circuits on ``_attr_name=None`` and falls back to just
+    # the device name.
     HikvisionSensorDescription(
         key="serial",
+        name="Serial Number",
         translation_key="serial",
         icon="mdi:barcode",
         value_fn=lambda d: decode_octet_string(_scalar("serial")(d)),
     ),
     HikvisionSensorDescription(
         key="ip_addr",
+        name="IP Address",
         translation_key="ip_addr",
         icon="mdi:ip",
         value_fn=lambda d: str(_scalar("ip_addr")(d)) if _scalar("ip_addr")(d) else None,
     ),
     HikvisionSensorDescription(
         key="trap_target",
+        name="Trap Target",
         translation_key="trap_target",
         icon="mdi:lan-connect",
         value_fn=lambda d: decode_octet_string(_scalar("trap_target")(d)),
     ),
     HikvisionSensorDescription(
         key="cpu_freq",
+        name="CPU Frequency",
         translation_key="cpu_freq",
         # HA 2024 deprecated `UnitOfInformation.MEGAHERTZ` (megahertz is a
         # frequency, not an information/data unit). HA 2025.1 removed the
@@ -226,6 +257,7 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="temperature_or_load",
+        name="Temperature / Load",
         translation_key="temperature_or_load",
         # The .220.0 leaf is device-specific — could be temperature (×10)
         # or a load counter. Show raw value; user can rename / re-unit.
@@ -235,6 +267,7 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="traffic_or_iops",
+        name="Traffic / IOPS",
         translation_key="traffic_or_iops",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:swap-vertical",
@@ -242,6 +275,7 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="channels_total",
+        name="Channels Total",
         translation_key="channels_total",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:counter",
@@ -249,6 +283,7 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="active_state",
+        name="Active State",
         translation_key="active_state",
         # .230.0 — INTEGER 1 typically means "any channel active/recording".
         icon="mdi:record-rec",
@@ -256,6 +291,7 @@ NVR_SENSORS: tuple[HikvisionSensorDescription, ...] = (
     ),
     HikvisionSensorDescription(
         key="online_state",
+        name="Online State",
         translation_key="online_state",
         # .231.0 — INTEGER count of online channels on the NVR.
         state_class=SensorStateClass.MEASUREMENT,
@@ -377,24 +413,37 @@ class HikvisionSensor(
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
-        # v0.1.17 — explicitly set ``_attr_translation_key`` on the
-        # entity instance, not just on entity_description. HA Core's
-        # ``Entity.name`` property reads ``_attr_name`` first, then
-        # ``entity_description.name``. When both are None, HA's frontend
-        # falls back to ``registry.translation_key`` (set at registration
-        # time from ``entity_description.translation_key``), but the
-        # cached_property chain only checks the entity instance
-        # attributes — the registry translation_key is only consulted
-        # when ``Entity.name`` returns None, and we want to avoid the
-        # ambiguity entirely. Setting ``_attr_translation_key``
-        # explicitly on the instance guarantees HA's frontend picks
-        # up our translation_key regardless of which code path it
-        # takes through the entity name resolution.
+        # v0.1.19 — restore English suffix display. v0.1.17 set
+        # ``_attr_name = None`` to "let translation_key drive the
+        # name", but HA Core 2026.x's ``Entity.name`` cached_property
+        # checks ``_attr_name`` first and short-circuits when it's
+        # None (rather than falling back to ``entity_description.name``
+        # or to ``registry.translation_key`` for translation lookup).
+        # The result was entities displayed as just the device name
+        # ("ipc", "NVR") with NO suffix at all — strictly worse than
+        # the v0.1.14 English-suffix behaviour.
+        #
+        # The translation_key is still set so HA frontend translation
+        # CAN apply it on top of the English fallback. With
+        # ``_attr_name = "Model"`` and ``_attr_translation_key =
+        # "model"``:
+        # - English locale: HA's __init__ path returns "Model",
+        #   frontend doesn't translate (en.json's "Model" maps to
+        #   "Model" anyway).
+        # - Chinese locale: ideally HA frontend replaces "Model" with
+        #   "型号". If HA doesn't apply translation (observed on the
+        #   user's HAOS 2026.x), user sees "ipc Model" instead of
+        #   the broken "ipc " (no suffix).
+        #
+        # ``description.name`` is set on HikvisionSensorDescription
+        # entries as the canonical English name; if absent we
+        # synthesize a Title-Case fallback from the key so the entity
+        # always has a meaningful suffix.
+        if description.name:
+            self._attr_name = description.name
+        else:
+            self._attr_name = description.key.replace("_", " ").title()
         self._attr_translation_key = description.translation_key
-        # Also clear ``_attr_name`` to None so HA's name fallback chain
-        # doesn't accidentally hit a stale ``description.name`` value
-        # from a pre-v0.1.17 entity_description that still had a name.
-        self._attr_name = None
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = coordinator.device_info
 
@@ -425,32 +474,21 @@ class _DynamicTableSensor(
         super().__init__(coordinator)
         self._idx = idx
         self._metric_key = metric_key
-        # v0.1.17 — explicit translation_key on the instance + clear
-        # ``_attr_name``. Pre-v0.1.17 the constructor set both
-        # ``_attr_translation_key`` AND ``_attr_name = name_suffix``;
-        # HA Core's ``Entity.name`` cached_property reads ``_attr_name``
-        # first and short-circuits the translation lookup, which meant
-        # the per-channel / per-disk entities (Channel Label, Motion,
-        # Disk Name, etc.) always showed the English ``name_suffix``
-        # even on zh-locale installs.
+        # v0.1.19 — restore the v0.1.14 behaviour where ``_attr_name``
+        # is set to the English ``name_suffix`` (e.g. "Channel Label",
+        # "Motion", "Disk Name"). v0.1.17 set ``_attr_name = None``
+        # which made the entities display as just the device name
+        # (e.g. "ipc" / "NVR") with NO suffix — strictly worse.
         #
-        # We keep ``name_suffix`` around as a fallback for locales
-        # that don't have a translation file — HA's frontend will use
-        # the translated name when present and fall back to the
-        # original_name / entity_description.name otherwise.
+        # The translation_key is still set so HA's frontend CAN
+        # overlay the translated name on top of the English suffix
+        # if it decides to honour translation_key for entities that
+        # already have a ``_attr_name`` set. If HA's frontend doesn't
+        # honour it (observed on the user's HAOS 2026.x), the user
+        # sees the English suffix — which is at least a meaningful
+        # entity name instead of a blank device-name-only entry.
+        self._attr_name = name_suffix
         self._attr_translation_key = translation_key
-        self._attr_name = None
-        # Store the English fallback in entity_description.name so HA's
-        # entity_registry uses it as ``original_name`` (the name shown
-        # when the user's locale doesn't have a matching translation
-        # entry). The translation_key + entity_description.name combo
-        # is the canonical pattern recommended by HA Core.
-        self.entity_description = HikvisionSensorDescription(
-            key=f"{self._table_name}_{idx}_{metric_key}",
-            name=name_suffix,
-            translation_key=translation_key,
-            native_unit_of_measurement=unit,
-        )
         self._attr_native_unit_of_measurement = unit
         self._attr_unique_id = f"{entry.entry_id}_{self._table_name}_{idx}_{metric_key}"
         self._attr_device_info = coordinator.device_info
