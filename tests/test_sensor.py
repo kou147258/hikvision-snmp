@@ -279,76 +279,78 @@ def _patch_sensor_module_for_setup(coordinator):
 
 
 @pytest.mark.asyncio
-async def test_sensor_setup_completes_when_first_refresh_is_fast():
-    """``async_setup_entry`` returns normally when the first refresh is < 15s."""
+async def test_sensor_setup_does_not_wait_for_first_refresh():
+    """``async_setup_entry`` returns immediately without waiting for the
+    coordinator's first refresh.
+
+    v0.1.22 removed the ``asyncio.wait_for(coordinator
+    .async_config_entry_first_refresh(), timeout=15)`` guard. On busy
+    V5.x devices that first refresh can take 15-30 s, which exceeded
+    HA's 10 s internal "Setup of X platform is taking over 10 seconds"
+    monitoring threshold. By not waiting, setup completes in < 1 s
+    and entities register immediately (showing as ``unavailable``
+    until the coordinator's normal 10 s poll cycle populates data).
+    """
     from custom_components.hikvision_snmp.sensor import async_setup_entry
 
     coordinator = _FakeCoordinator()
     hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
 
     await async_setup_entry(hass, entry, add_entities)
-    assert coordinator.refresh_called == 1
+    # v0.1.22 — async_setup_entry does NOT call
+    # async_config_entry_first_refresh anymore (it was removed in this
+    # release). refresh_called stays at 0.
+    assert coordinator.refresh_called == 0
 
 
 @pytest.mark.asyncio
-async def test_sensor_setup_does_not_cancellederror_when_first_refresh_times_out():
-    """``async_setup_entry`` no longer raises CancelledError when first refresh is slow.
+async def test_sensor_setup_completes_under_one_second_even_with_slow_first_refresh():
+    """``async_setup_entry`` completes in < 1 s even when the coordinator's
+    first poll is slow.
 
-    Pre-v0.1.16: HA's entry-setup timeout fired while the coordinator's
-    first refresh was in progress, propagating ``CancelledError`` up
-    through ``entity_platform._async_setup_platform`` to
-    ``config_entries.async_setup_entry``, where HA surfaced it as
-    ``Setup of config entry 'ipc' for hikvision_snmp integration
-    cancelled``.
-
-    v0.1.16 wraps the first refresh in
-    ``asyncio.wait_for(coordinator.async_config_entry_first_refresh(), timeout=15)``
-    so the worst case is a TimeoutError logged as a warning, then entity
-    registration continues. HA sees a successful setup. Entities will
-    be unavailable until the coordinator's next 10 s poll succeeds.
-
-    Simulated here by setting the coordinator's delay to 0.1 s and
-    wrapping wait_for with a tighter 0.05 s timeout — the wrapper is
-    set in the sensor module via monkeypatch so we test the actual
-    wait_for invocation rather than the production 15 s wall time.
+    Regression guard for the v0.1.16 / v0.1.19 behaviour where the
+    15 s ``wait_for`` caused HA's "Setup of X platform is taking
+    over 10 seconds" warning to fire on busy V5.x devices.
     """
+    import time
+
     import custom_components.hikvision_snmp.sensor as sensor_mod
 
     coordinator = _FakeCoordinator()
-    coordinator._delay_seconds = 0.1  # way over the patched 0.05s wait_for
+    coordinator._delay_seconds = 5.0  # way over the old 15s guard
     hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
 
-    real_wait_for = asyncio.wait_for
+    start = time.monotonic()
+    await sensor_mod.async_setup_entry(hass, entry, add_entities)
+    elapsed = time.monotonic() - start
 
-    async def tight_wait_for(awaitable, timeout):
-        return await real_wait_for(awaitable, timeout=0.05)
-
-    with patch.object(sensor_mod.asyncio, "wait_for", tight_wait_for):
-        # Must NOT raise CancelledError.
-        await sensor_mod.async_setup_entry(hass, entry, add_entities)
-
-    assert coordinator.refresh_called == 1
+    # v0.1.22 — setup should be near-instantaneous (the slow refresh
+    # happens in the background, NOT in async_setup_entry).
+    assert elapsed < 0.5, (
+        f"async_setup_entry took {elapsed:.2f}s — should be near-instant. "
+        f"v0.1.22 explicitly does NOT wait for the first refresh."
+    )
 
 
 @pytest.mark.asyncio
-async def test_binary_sensor_setup_does_not_cancellederror_when_first_refresh_times_out():
-    """Same setup-guard test for the binary_sensor platform."""
+async def test_binary_sensor_setup_does_not_wait_for_first_refresh():
+    """Same instant-setup test for the binary_sensor platform."""
     import custom_components.hikvision_snmp.binary_sensor as binary_mod
 
     coordinator = _FakeCoordinator()
-    coordinator._delay_seconds = 0.1
+    coordinator._delay_seconds = 5.0
     hass, entry, add_entities = _patch_sensor_module_for_setup(coordinator)
 
-    real_wait_for = asyncio.wait_for
+    import time
 
-    async def tight_wait_for(awaitable, timeout):
-        return await real_wait_for(awaitable, timeout=0.05)
+    start = time.monotonic()
+    await binary_mod.async_setup_entry(hass, entry, add_entities)
+    elapsed = time.monotonic() - start
 
-    with patch.object(binary_mod.asyncio, "wait_for", tight_wait_for):
-        # Must NOT raise CancelledError.
-        await binary_mod.async_setup_entry(hass, entry, add_entities)
-
-    assert coordinator.refresh_called == 1
+    assert elapsed < 0.5, (
+        f"binary_sensor async_setup_entry took {elapsed:.2f}s — should be near-instant"
+    )
+    assert coordinator.refresh_called == 0
 
 
 # ---- v0.1.16 — translations files are valid JSON ----

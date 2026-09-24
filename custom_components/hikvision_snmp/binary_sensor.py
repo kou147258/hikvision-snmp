@@ -39,23 +39,14 @@ async def async_setup_entry(
 ) -> None:
     coordinator: HikvisionDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # v0.1.16 — same 15 s wait_for guard as sensor.py. See that file's
-    # comment for the full rationale; the binary_sensor platform's first
-    # refresh was hitting HA's entry-setup timeout on slow V5.x NVRs
-    # with many channels.
-    try:
-        await asyncio.wait_for(
-            coordinator.async_config_entry_first_refresh(),
-            timeout=15,
-        )
-    except asyncio.TimeoutError:
-        _LOGGER.warning(
-            "Initial poll did not complete within 15 s for %s; "
-            "binary sensors will become available once the coordinator recovers",
-            coordinator.client.host,
-        )
-    except Exception:  # noqa: BLE001
-        raise
+    # v0.1.22 — same change as sensor.py: do NOT wait for the
+    # coordinator's first refresh. Register entities immediately
+    # so the binary_sensor platform's async_setup_entry completes in
+    # well under HA's 10 s internal "Setup of X platform is taking
+    # over 10 seconds" warning threshold. Entities show ``unknown``
+    # until the coordinator's normal 10 s poll cycle populates the
+    # first successful data. See sensor.py:async_setup_entry for the
+    # full rationale.
 
     binary_entities = [
         HikvisionOnlineBinarySensor(coordinator, entry),

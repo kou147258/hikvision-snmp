@@ -317,29 +317,26 @@ async def async_setup_entry(
     """Set up sensors from a config entry."""
     coordinator: HikvisionDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # v0.1.16 — guard the first-refresh wait. Hikvision V5.x firmware can
-    # take 8-15 s for the first poll (system walk + channel walk + disk
-    # walk, each potentially 1-2 s × N channels), and HA's entry-setup
-    # timeout was being hit on ipc / NVR devices in production, surfacing
-    # as ``asyncio.exceptions.CancelledError`` propagated up from
-    # ``entity_platform._async_setup_platform``. Bounding the wait at
-    # 15 s lets entities register with stale-but-non-blocking state
-    # (they'll be unavailable until the coordinator recovers on its
-    # next 10 s poll), instead of the whole entry being cancelled.
-    try:
-        await asyncio.wait_for(
-            coordinator.async_config_entry_first_refresh(),
-            timeout=15,
-        )
-    except asyncio.TimeoutError:
-        _LOGGER.warning(
-            "Initial poll did not complete within 15 s for %s; "
-            "sensors will become available once the coordinator recovers",
-            coordinator.client.host,
-        )
-    except Exception:  # noqa: BLE001
-        # UpdateFailed, ConfigEntryNotReady, etc. — let HA handle.
-        raise
+    # v0.1.22 — do NOT wait for the coordinator's first refresh here.
+    # On Hikvision V5.x firmware under load (active video streaming /
+    # recording), the SNMP daemon is starved by the video pipeline and
+    # the first poll (system walk + channel walk + disk walk) can take
+    # 15-30 s. The v0.1.16 ``wait_for(15)`` guard capped that wait and
+    # logged a warning, but it still held the entity_platform setup
+    # open for up to 15 s — which triggers HA's own "Setup of X platform
+    # is taking over 10 seconds" warning. The right behaviour is to
+    # register the entities immediately and let the coordinator's
+    # normal 10 s poll cycle populate the data. The entities will be
+    # ``unavailable`` for at most one poll interval after entry setup.
+    #
+    # The one trade-off: per-channel and per-disk entity creation
+    # depends on ``coordinator.data`` being populated (it carries the
+    # walk results), which only happens after a successful refresh. On
+    # busy devices where the first poll exceeds 10 s, the per-channel
+    # / per-disk entities are NOT created during the initial setup
+    # pass — they appear after a reload. The system OID sensors (model,
+    # CPU, memory, IP, etc.) are always created because they don't
+    # depend on data.
 
     data = coordinator.data or {}
 
