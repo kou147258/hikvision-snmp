@@ -152,6 +152,43 @@ IPC_SENSORS: tuple[HikvisionSensorDescription, ...] = (
         icon="mdi:lan",
         value_fn=lambda d: decode_octet_string(_scalar("network_type")(d)),
     ),
+    # v0.1.18 — IPC network panel fields. These were defined in
+    # const.py: SYSTEM_OIDS since v0.1.0 but never mapped to a
+    # HikvisionSensorDescription, so the integration queried them
+    # via the system OID walk but never exposed them as entities.
+    # Reported by the maintainer after auditing the snmpwalk output
+    # against the running integration on real hardware.
+    HikvisionSensorDescription(
+        key="ip_addr",
+        translation_key="ip_addr",
+        icon="mdi:ip",
+        # IpAddress from pysnmp; str() gives dotted notation.
+        value_fn=lambda d: str(_scalar("ip_addr")(d)) if _scalar("ip_addr")(d) else None,
+    ),
+    HikvisionSensorDescription(
+        key="subnet_mask",
+        translation_key="subnet_mask",
+        icon="mdi:subnet",
+        value_fn=lambda d: str(_scalar("subnet_mask")(d)) if _scalar("subnet_mask")(d) else None,
+    ),
+    HikvisionSensorDescription(
+        key="gateway",
+        translation_key="gateway",
+        icon="mdi:router-network",
+        value_fn=lambda d: str(_scalar("gateway")(d)) if _scalar("gateway")(d) else None,
+    ),
+    HikvisionSensorDescription(
+        key="video_codec_primary",
+        translation_key="video_codec_primary",
+        icon="mdi:video-high-definition",
+        value_fn=lambda d: decode_octet_string(_scalar("video_codec_primary")(d)),
+    ),
+    HikvisionSensorDescription(
+        key="video_codec_secondary",
+        translation_key="video_codec_secondary",
+        icon="mdi:video-high-definition",
+        value_fn=lambda d: decode_octet_string(_scalar("video_codec_secondary")(d)),
+    ),
 )
 
 

@@ -64,14 +64,19 @@ SYSTEM_OIDS: dict[str, str] = {
     "ip_addr_alt2": "14",
     "ip_addr_alt3": "15",
     "ip_addr": "16",           # IpAddress
-    "subnet_mask": "17",
-    "gateway": "18",
-    "device_time": "19",
-    "video_codec_primary": "21",
-    "video_codec_secondary": "22",
+    "subnet_mask": "17",       # IpAddress
+    "gateway": "18",           # IpAddress
+    "device_time": "19",       # STRING "2026-09-24 08:18:02"
+    "device_type_code": "20",  # INTEGER (Hikvision-internal — not exposed in v0.1.18)
+    "video_codec_primary": "21",  # STRING "H.264"
+    "video_codec_secondary": "22",  # STRING "H.264"
+    "media_mode": "23",        # INTEGER (Hikvision-internal — not exposed)
     "online": "24",            # INTEGER 1 = online, 0 = offline
     "recording": "25",         # INTEGER 1 = recording, 0 = not
-    "network_type": "29",
+    "ptz_status_a": "26",      # INTEGER (Hikvision-internal — not exposed)
+    "ptz_status_b": "27",      # INTEGER (Hikvision-internal — not exposed)
+    "ptz_status_c": "28",      # INTEGER (Hikvision-internal — not exposed)
+    "network_type": "29",      # STRING "ETHERNET"
 }
 
 OID_CHANNEL_IPC = f"{HIKVISION_IPC_MIB_ROOT}.2"
